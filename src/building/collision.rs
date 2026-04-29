@@ -5,6 +5,7 @@
 //!   and boulders use), so `snap_to_terrain` lifts the cat onto them.
 
 use bevy::prelude::*;
+use bevy_rapier3d::prelude::{Collider, RigidBody};
 
 use crate::camera::occluder_fade::NoOcclude;
 use crate::crafting::CraftingState;
@@ -28,10 +29,14 @@ pub struct WallCollision {
 }
 
 pub fn register(app: &mut App) {
-    app.add_systems(
-        Update,
-        push_player_out_of_walls.after(crate::player::move_player),
-    );
+    // Wall collision is now handled by rapier: walls spawn with their own
+    // `Collider` (see `attach_for_form`) and rapier resolves penetration
+    // against the player rigid body. The hand-rolled `push_player_out_of_walls`
+    // system would fight rapier by mutating Transform directly, so it's
+    // unregistered. Kept in source for reference until wall colliders are
+    // proven out under playtest (W0.3 / DEBT-016).
+    let _ = app;
+    let _ = push_player_out_of_walls;
 }
 
 /// Attach the right collision component for `form` to a freshly-spawned
@@ -41,46 +46,49 @@ pub fn attach_for_form(entity: &mut EntityCommands, form: Form, transform: &Tran
     let pos = transform.translation;
     match form {
         Form::Floor => {
-            // Cuboid 1.0 x 0.12 x 1.0 centred on transform.y. Top is +0.06.
-            // The cat stands on top, so this is never an occluder.
+            // 1.0 x 0.12 x 1.0 cuboid centred on transform.y. Cat stands on
+            // top, so it's never an occluder. PropCollision stays so the
+            // existing examine/lookup code keeps working.
             entity.insert(PropCollision {
                 top_y: pos.y + 0.06,
                 radius: 0.71,
             });
             entity.insert(NoOcclude);
+            entity.insert((Collider::cuboid(0.5, 0.06, 0.5), RigidBody::Fixed));
         }
         Form::Roof => {
-            // Cuboid 1.2 x 0.18 x 1.2 centred on transform.y. Top is +0.09.
             entity.insert(PropCollision {
                 top_y: pos.y + 0.09,
                 radius: 0.85,
             });
             entity.insert(NoOcclude);
+            entity.insert((Collider::cuboid(0.6, 0.09, 0.6), RigidBody::Fixed));
         }
         Form::Wall => {
-            // Cuboid 1.0 x 1.6 x 0.15 centred on transform.y.
+            // 1.0 x 1.6 x 0.15 in local frame; rapier picks up the entity's
+            // rotation so the cuboid lines up with the painted wall.
             entity.insert(WallCollision {
                 half_extents: Vec2::new(0.5, 0.075),
                 bottom_y: pos.y - 0.8,
                 top_y: pos.y + 0.8,
             });
+            entity.insert((Collider::cuboid(0.5, 0.8, 0.075), RigidBody::Fixed));
         }
         Form::Door => {
-            // Cuboid 0.9 x 1.7 x 0.12. Treat as solid for now; an openable
-            // door comes later.
             entity.insert(WallCollision {
                 half_extents: Vec2::new(0.45, 0.06),
                 bottom_y: pos.y - 0.85,
                 top_y: pos.y + 0.85,
             });
+            entity.insert((Collider::cuboid(0.45, 0.85, 0.06), RigidBody::Fixed));
         }
         Form::Window => {
-            // Cuboid 0.9 x 0.8 x 0.12. Solid for the cat (it's not a hole).
             entity.insert(WallCollision {
                 half_extents: Vec2::new(0.45, 0.06),
                 bottom_y: pos.y - 0.4,
                 top_y: pos.y + 0.4,
             });
+            entity.insert((Collider::cuboid(0.45, 0.4, 0.06), RigidBody::Fixed));
         }
         _ => {}
     }

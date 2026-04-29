@@ -13,7 +13,13 @@ pub fn init_water_ripples(
     water_tiles: Query<(Entity, &Transform), (With<WaterTile>, Without<WaterRipple>)>,
 ) {
     for (entity, tf) in &water_tiles {
-        commands.entity(entity).insert(WaterRipple {
+        // `try_insert` swallows the despawn race: chunks unload (and take
+        // their water tiles with them) between the query collection here
+        // and the deferred command apply, which without this would panic.
+        // The race got more frequent once rapier was added — the player
+        // rigid body churns ChunkManager.player_chunk faster while it
+        // settles under gravity.
+        commands.entity(entity).try_insert(WaterRipple {
             base_y: tf.translation.y,
             initialized: true,
         });

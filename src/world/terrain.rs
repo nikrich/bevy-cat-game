@@ -1,4 +1,5 @@
 use bevy::prelude::*;
+use bevy_rapier3d::prelude::{Collider, RigidBody};
 
 use super::biome::{Biome, WorldNoise, SEA_LEVEL};
 use super::chunks::{Chunk, CHUNK_SIZE};
@@ -81,9 +82,23 @@ pub fn spawn_chunk_terrain(
 
             let sh = step_height(sample.elevation * sample.biome.height_scale());
 
+            // Each terrain tile carries a 1.0 x 0.6 x 1.0 cuboid `Collider`
+            // matching its mesh; rapier reads this as a static fixed body
+            // (the implicit default when no `RigidBody` is present is fine,
+            // but we tag `RigidBody::Fixed` explicitly for clarity). The
+            // per-tile cuboid is intentionally throwaway: Phase 1 replaces
+            // terrain with a vertex-height grid mesh and a `Collider::trimesh`.
+            let tile_collider = || (Collider::cuboid(0.5, 0.3, 0.5), RigidBody::Fixed);
+
             if sample.biome.is_water() {
-                // Terrain floor under water (darker)
-                let floor_y = step_height(SEA_LEVEL) * 0.5 - 1.2;
+                // Wade-friendly floor: tuned so a float_height=1.0 cat
+                // settles with its centre at y≈0 — capsule bottom (~-0.7)
+                // well submerged inside the water mesh (top at -0.2),
+                // capsule top (~+0.7) clearing the surface. Reproduces the
+                // half-submerged wading look the old `snap_to_terrain` had,
+                // and leaves the Jump arc (peak +1.6) tall enough to clear
+                // the surrounding beach tiles.
+                let floor_y = step_height(SEA_LEVEL) * 0.5 - 1.05;
                 let floor = commands
                     .spawn((
                         Tile {
@@ -97,10 +112,12 @@ pub fn spawn_chunk_terrain(
                             floor_y,
                             wz as f32 * TILE_SIZE,
                         ),
+                        tile_collider(),
                     ))
                     .id();
 
-                // Water surface at sea level
+                // Water surface mesh is purely visual — no collider, so the
+                // cat sinks past it onto the wade-friendly floor below.
                 let water_y = step_height(SEA_LEVEL) * 0.5 - 0.15;
                 let water = commands
                     .spawn((
@@ -132,6 +149,7 @@ pub fn spawn_chunk_terrain(
                             sh * 0.5,
                             wz as f32 * TILE_SIZE,
                         ),
+                        tile_collider(),
                     ))
                     .id();
 

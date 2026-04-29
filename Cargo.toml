@@ -13,6 +13,9 @@ directories = "6"
 leafwing-input-manager = "0.20.0"
 bevy_egui = "0.39.1"
 bevy_asset_loader = "0.26.0"
+bevy_rapier3d = "0.33.0"
+bevy-tnua = "0.31.0"
+bevy-tnua-rapier3d = "0.16.0"
 
 # Enable optimizations for dependencies in dev builds (keeps game code debuggable)
 [profile.dev.package."*"]

@@ -130,6 +130,16 @@
 - **Effort**: M
 - **Status**: Open
 
+## DEBT-017: AppExit deadlocks under rapier + egui
+- **Added**: 2026-04-29
+- **Severity**: Low
+- **Area**: state
+- **What**: `MessageWriter<AppExit>` from the egui Quit buttons closes the window but the process never exits — some thread/resource teardown order in Bevy 0.18 + bevy_rapier3d 0.33 + bevy_egui 0.39 deadlocks. As a workaround, `state::quit_now()` calls `std::process::exit(0)` directly. The save loop already auto-saves every 30s and on F5, so the worst case is losing 30s of unsaved play
+- **Why**: Identified during W0.3 + W0.4 playtest. Hand-shutting the process down with `std::process::exit` skips Drop on every resource in the world — fine for our small game, would be a problem if any subsystem needs to flush state on exit (none currently do)
+- **Fix when**: Bevy / rapier / egui versions move forward — bisect to find which one's teardown is the culprit. Or convert Quit-from-pause into "auto-save + return to MainMenu" and reserve the actual process exit for window-close, where Bevy seems to handle it cleanly
+- **Effort**: M (bisect upstream) or S (UX-flow rework)
+- **Status**: Open
+
 ## DEBT-014: Procedural atmosphere art-direction mismatch
 - **Added**: 2026-04-29
 - **Severity**: Low
@@ -140,15 +150,12 @@
 - **Effort**: M (custom shader skybox) or S (spec amendment)
 - **Status**: Open
 
-## DEBT-016: Player movement physics (W0.3 rapier + W0.4 tnua) deferred
+## DEBT-016: Player movement physics (W0.3 rapier + W0.4 tnua)
 - **Added**: 2026-04-29
-- **Severity**: Medium
+- **Severity**: -
 - **Area**: player, world/terrain, world/props
-- **What**: W0.3 (`bevy_rapier3d`) and W0.4 (`bevy_tnua`) were intentionally deferred to a focused session. Together they replace the current Transform-driven `move_player` + `snap_to_terrain` with a physics-driven character controller. Half-shipping is worse than no-shipping: rapier alone makes the player a dynamic body but without a character controller it falls through everything not yet wired with colliders, and the spec acceptance for W0.3 explicitly requires "player falls under gravity onto terrain, can walk on it without clipping" -- which forces W0.4 in the same pass
-- **Why**: The integration touches more than just `player::move_player`. Side effects to handle: (a) per-tile `Collider::cuboid` on every terrain tile (cheap but multiplies entity component counts); (b) per-prop colliders so the climb-on-top behaviour from `PropCollision` keeps working under physics (currently a distance-radius check, would become a rapier capsule/cylinder); (c) tnua step-up height tuned to the terrain's 0.25-step quantisation so the cat doesn't snag on tile seams; (d) `snap_to_terrain` removed and `pose_player` re-validated against physics-driven Y. None of these is hard alone -- the risk is the *interaction*, which only shows up under playtest
-- **Fix when**: Next focused session before Phase 1. Recommended order: rapier plugin + terrain colliders → player rigid body (verify gravity drops cat onto terrain) → tnua controller + leafwing wiring → prop colliders → remove snap_to_terrain. Phase 1 then re-does terrain colliders against the new vertex-height grid, so the per-tile cuboid form here is intentionally throwaway
-- **Effort**: M-L (one focused session)
-- **Status**: Open
+- **What**: Originally tracked the deferral of W0.3 (`bevy_rapier3d`) and W0.4 (`bevy_tnua`); both shipped in a follow-up session the same day
+- **Status**: Resolved (2026-04-29) -- rapier 0.33 + tnua 0.31 + tnua-rapier3d 0.16 wired up. Per-tile cuboid colliders on terrain (intentionally throwaway, Phase 1 swaps for the vertex-height trimesh). Capsule rigid body + LockedAxes::ROTATION_LOCKED + TnuaController on the player. `TnuaBuiltinJump` action bound to `Action::Jump` with height=1.6 (clears one beach step + a stump). `snap_to_terrain` removed; gravity + the float spring drive Y. `pose_player` still scales the visual capsule for the verb cues. Wading depth tuned (`floor_y = step_height(SEA_LEVEL) * 0.5 - 1.05`) so the cat half-submerges in water mesh. Hand-rolled `push_player_out_of_walls` retired in favour of rapier-resolved wall colliders attached in `building::collision::attach_for_form`. Known follow-ups: tall trees act as climb-blocking walls (the float spring's cling_distance is intentionally short to avoid floating); water-tile collider race exposed by physics-driven chunk churn — `init_water_ripples` now uses `try_insert` to swallow despawn-races. The Quit button hard-exits via `std::process::exit(0)` because Bevy 0.18 + rapier + egui deadlock on `AppExit` shutdown — see DEBT-017
 
 ## DEBT-013: Phase 0 pending crate adoptions — superseded
 - **Added**: 2026-04-29

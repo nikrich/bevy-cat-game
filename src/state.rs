@@ -14,7 +14,6 @@
 //! Game / Settings split lands in a later phase when the save-slot UI is
 //! designed.
 
-use bevy::app::AppExit;
 use bevy::prelude::*;
 use bevy_asset_loader::loading_state::{
     config::ConfigureLoadingState, LoadingState, LoadingStateAppExt,
@@ -141,7 +140,6 @@ fn draw_loading_screen(mut contexts: EguiContexts) -> Result {
 fn draw_main_menu(
     mut contexts: EguiContexts,
     mut next: ResMut<NextState<GameState>>,
-    mut exit: MessageWriter<AppExit>,
 ) -> Result {
     let ctx = contexts.ctx_mut()?;
     egui::CentralPanel::default()
@@ -172,7 +170,7 @@ fn draw_main_menu(
                         }
                         ui.add_space(8.0);
                         if menu_button(ui, "Quit").clicked() {
-                            exit.write(AppExit::Success);
+                            quit_now();
                         }
                     });
                 },
@@ -184,7 +182,6 @@ fn draw_main_menu(
 fn draw_pause_overlay(
     mut contexts: EguiContexts,
     mut next: ResMut<NextState<GameState>>,
-    mut exit: MessageWriter<AppExit>,
 ) -> Result {
     let ctx = contexts.ctx_mut()?;
     egui::Area::new(egui::Id::new("pause_overlay"))
@@ -213,7 +210,7 @@ fn draw_pause_overlay(
                         }
                         ui.add_space(6.0);
                         if menu_button(ui, "Quit").clicked() {
-                            exit.write(AppExit::Success);
+                            quit_now();
                         }
                         ui.add_space(8.0);
                         ui.colored_label(
@@ -224,6 +221,18 @@ fn draw_pause_overlay(
                 });
         });
     Ok(())
+}
+
+/// Hard-exit the process. The polite `MessageWriter<AppExit>` path
+/// deadlocks on shutdown — Bevy 0.18 + rapier3d + bevy_egui hold thread
+/// resources whose teardown order doesn't agree with `AppExit`'s
+/// scheduler-stop, so the window closes but the process never dies.
+/// The save loop already auto-saves every 30s and on F5, so we lose at
+/// most the last 30s of unsaved play in exchange for the Quit button
+/// actually quitting. DEBT-016 sister issue, revisit when the rapier
+/// integration is replaced or upgraded.
+fn quit_now() -> ! {
+    std::process::exit(0);
 }
 
 fn menu_button(ui: &mut egui::Ui, label: &str) -> egui::Response {

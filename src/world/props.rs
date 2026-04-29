@@ -154,21 +154,39 @@ fn try_spawn_kenney_prop(
     let climb = prop_climb(&kind);
     let prop_y = y + lift;
 
-    let mut entity = commands.spawn((
-        Prop,
-        PropSway::default(),
-        kind,
-        SceneRoot(asset_server.load(path)),
-        Transform::from_xyz(x, prop_y, z).with_scale(Vec3::splat(scale)),
-        Visibility::default(),
-    ));
+    let prop = commands
+        .spawn((
+            Prop,
+            PropSway::default(),
+            kind,
+            SceneRoot(asset_server.load(path)),
+            Transform::from_xyz(x, prop_y, z).with_scale(Vec3::splat(scale)),
+            Visibility::default(),
+        ))
+        .id();
     if let Some((height, radius)) = climb {
-        entity.insert(PropCollision {
+        commands.entity(prop).insert(PropCollision {
             top_y: prop_y + height * scale,
             radius: radius * scale,
         });
+        // Spawn the rapier collider as a child entity translated up to the
+        // prop's vertical centre. Centring the cuboid on the prop entity
+        // would put it at `prop_y` (the foot), so the cat would collide
+        // with empty air and clip through the model. The child's local
+        // Transform handles the offset cleanly. Footprint a hair tighter
+        // than the PropCollision climb radius so the cat doesn't snag on
+        // the collider edge before its feet are over the visible prop.
+        let half_h = height * 0.5;
+        let half_r = radius * 0.7;
+        let collider = commands
+            .spawn((
+                Transform::from_xyz(0.0, half_h, 0.0),
+                bevy_rapier3d::prelude::Collider::cuboid(half_r, half_h, half_r),
+                bevy_rapier3d::prelude::RigidBody::Fixed,
+            ))
+            .id();
+        commands.entity(prop).add_child(collider);
     }
-    let prop = entity.id();
     commands.entity(chunk).add_child(prop);
     true
 }

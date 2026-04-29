@@ -17,6 +17,11 @@ mod world;
 use bevy::prelude::*;
 use bevy::window::WindowResolution;
 use bevy_egui::EguiPlugin;
+use bevy_rapier3d::prelude::{NoUserData, RapierPhysicsPlugin};
+use bevy_tnua::prelude::TnuaControllerPlugin;
+use bevy_tnua_rapier3d::prelude::TnuaRapier3dPlugin;
+
+use crate::player::ControlScheme;
 
 fn main() {
     App::new()
@@ -30,6 +35,12 @@ fn main() {
         }))
         .insert_resource(ClearColor(Color::srgb(0.54, 0.70, 0.52)))
         .add_plugins(EguiPlugin::default())
+        // Physics + character controller. Rapier ticks in PostUpdate; the
+        // tnua plugins ride along in Update so user input feeds the controller
+        // before the physics step resolves the motor output (W0.3 + W0.4).
+        .add_plugins(RapierPhysicsPlugin::<NoUserData>::default())
+        .add_plugins(TnuaControllerPlugin::<ControlScheme>::new(Update))
+        .add_plugins(TnuaRapier3dPlugin::new(Update))
         .add_plugins((
             state::StatePlugin,
             input::InputPlugin,
