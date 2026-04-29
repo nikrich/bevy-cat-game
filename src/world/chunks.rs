@@ -5,7 +5,7 @@ use super::terrain::spawn_chunk_terrain;
 
 pub const CHUNK_SIZE: i32 = 16;
 const RENDER_DISTANCE: i32 = 3;
-const WORLD_SEED: u32 = 42;
+const WORLD_SEED: u32 = 7;
 
 #[derive(Component)]
 pub struct Chunk {

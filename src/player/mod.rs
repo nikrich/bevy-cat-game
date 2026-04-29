@@ -2,7 +2,7 @@ use bevy::prelude::*;
 use crate::crafting::CraftingState;
 use crate::input::GameInput;
 use crate::save::LoadedPlayerPos;
-use crate::world::biome::WorldNoise;
+use crate::world::biome::{WorldNoise, SEA_LEVEL};
 use crate::world::chunks::ChunkManager;
 use crate::world::props::PropCollision;
 use crate::world::terrain::step_height;
@@ -92,12 +92,20 @@ fn snap_to_terrain(
         transform.translation.x as f64,
         transform.translation.z as f64,
     );
-    let sh = step_height(sample.elevation * sample.biome.height_scale());
-    // Tile is a 1.0x0.6x1.0 cuboid centred on `sh * 0.5`, so its top sits at
-    // `sh * 0.5 + 0.3`. Capsule3d::new(0.3, 0.8) extends 0.7 below its centre,
-    // so we need centre = tile_top + 0.7 = sh*0.5 + 1.0 to plant the cat's
-    // feet on the surface instead of burying it in the dirt.
-    let mut target_y = sh * 0.5 + 1.0;
+    let mut target_y = if sample.biome.is_water() {
+        // Wading in water: capsule centre sits just above the painted water
+        // surface so the cat looks half-submerged rather than floating.
+        // Water surface = step_height(SEA_LEVEL) * 0.5 - 0.15 (matches terrain).
+        let water_surface = step_height(SEA_LEVEL) * 0.5 - 0.15;
+        water_surface + 0.4
+    } else {
+        // Tile is a 1.0x0.6x1.0 cuboid centred on `sh * 0.5`, so its top sits
+        // at `sh * 0.5 + 0.3`. Capsule3d::new(0.3, 0.8) extends 0.7 below its
+        // centre, so we need centre = tile_top + 0.7 to plant the feet on the
+        // dirt surface rather than burying them.
+        let sh = step_height(sample.elevation * sample.biome.height_scale());
+        sh * 0.5 + 1.0
+    };
 
     // Climb onto any nearby prop with a PropCollision -- pick the highest top
     // within reach so stacked / overlapping props don't fight each other.

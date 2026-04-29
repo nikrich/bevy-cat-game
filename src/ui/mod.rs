@@ -33,6 +33,7 @@ impl Plugin for GameUiPlugin {
                     update_build_prompt,
                     update_build_hotbar,
                     handle_build_hotbar_clicks,
+                    handle_inventory_placeable_clicks,
                     scroll_hovered_panels,
                 ),
             );
@@ -118,6 +119,7 @@ const ROW_BG_SELECTED_NO: Color = Color::srgba(0.78, 0.30, 0.26, 0.28);
 fn spawn_ui(
     mut commands: Commands,
     assets: Res<UiAssets>,
+    asset_server: Res<AssetServer>,
     registry: Res<ItemRegistry>,
     recipes: Res<RecipeRegistry>,
     placeables: Res<PlaceableItems>,
@@ -154,12 +156,70 @@ fn spawn_ui(
             parent.spawn(body_text(&assets, "", 16.0, TEXT_GOLD_DIM));
         });
 
-    spawn_inventory_bar(&mut commands, &assets, &registry);
-    spawn_crafting_menu(&mut commands, &assets, &registry, &recipes);
-    spawn_build_hotbar(&mut commands, &assets, &registry, &placeables);
+    spawn_inventory_bar(&mut commands, &assets, &asset_server, &registry);
+    spawn_crafting_menu(&mut commands, &assets, &asset_server, &registry, &recipes);
+    spawn_build_hotbar(&mut commands, &assets, &asset_server, &registry, &placeables);
 }
 
-fn spawn_inventory_bar(commands: &mut Commands, assets: &UiAssets, registry: &ItemRegistry) {
+/// Helper: spawn an item swatch in a slot. If the item has a Kenney photo,
+/// use it. Otherwise fall back to a procedurally-shaped colour rectangle whose
+/// proportions and rounding mirror the placed primitive (so a Wall reads as a
+/// tall thin tile, a Lantern as a capsule, a Wreath as a ring, etc.).
+fn spawn_item_swatch(
+    parent: &mut ChildSpawnerCommands,
+    asset_server: &AssetServer,
+    def: &crate::items::ItemDef,
+    size: f32,
+) {
+    if let Some(path) = def.form.icon_path() {
+        parent.spawn((
+            Node {
+                width: Val::Px(size),
+                height: Val::Px(size),
+                ..default()
+            },
+            ImageNode::new(asset_server.load(path)),
+        ));
+        return;
+    }
+
+    // Procedural shape swatch -- centre the proportional rect inside a square
+    // box of `size` so all slot icons share the same overall footprint.
+    let (w_norm, h_norm, r_norm) = def.form.icon_shape();
+    let scale = (w_norm.max(h_norm)).max(0.001);
+    let sw = size * (w_norm / scale);
+    let sh = size * (h_norm / scale);
+    let radius = (sw.min(sh)) * r_norm;
+
+    parent
+        .spawn((
+            Node {
+                width: Val::Px(size),
+                height: Val::Px(size),
+                justify_content: JustifyContent::Center,
+                align_items: AlignItems::Center,
+                ..default()
+            },
+        ))
+        .with_children(|wrap| {
+            wrap.spawn((
+                Node {
+                    width: Val::Px(sw),
+                    height: Val::Px(sh),
+                    ..default()
+                },
+                BackgroundColor(def.material.base_color()),
+                BorderRadius::all(Val::Px(radius)),
+            ));
+        });
+}
+
+fn spawn_inventory_bar(
+    commands: &mut Commands,
+    assets: &UiAssets,
+    asset_server: &AssetServer,
+    registry: &ItemRegistry,
+) {
     let stackables: Vec<&crate::items::ItemDef> = registry
         .iter_with_tag(ItemTags::STACKABLE)
         .collect();
@@ -197,16 +257,7 @@ fn spawn_inventory_bar(commands: &mut Commands, assets: &UiAssets, registry: &It
                         Visibility::Hidden,
                     ))
                     .with_children(|slot| {
-                        slot.spawn((
-                            Node {
-                                width: Val::Px(26.0),
-                                height: Val::Px(26.0),
-                                margin: UiRect::bottom(Val::Px(2.0)),
-                                ..default()
-                            },
-                            BackgroundColor(def.material.base_color()),
-                            BorderRadius::all(Val::Px(4.0)),
-                        ));
+                        spawn_item_swatch(slot, asset_server, def, 32.0);
                         slot.spawn(body_text(assets, &def.display_name, 9.0, TEXT_BODY_DIM));
                         slot.spawn((
                             InventoryCount { item: def.id },
@@ -220,6 +271,7 @@ fn spawn_inventory_bar(commands: &mut Commands, assets: &UiAssets, registry: &It
 fn spawn_crafting_menu(
     commands: &mut Commands,
     assets: &UiAssets,
+    asset_server: &AssetServer,
     registry: &ItemRegistry,
     recipes: &RecipeRegistry,
 ) {
@@ -349,7 +401,7 @@ fn spawn_crafting_menu(
                 ))
                 .with_children(|scroll| {
                     for (i, recipe) in recipes.recipes.iter().enumerate() {
-                        spawn_recipe_row(scroll, assets, registry, recipe, i);
+                        spawn_recipe_row(scroll, assets, asset_server, registry, recipe, i);
                     }
                 });
 
@@ -400,14 +452,15 @@ fn spawn_crafting_menu(
 fn spawn_recipe_row(
     panel: &mut ChildSpawnerCommands,
     assets: &UiAssets,
+    asset_server: &AssetServer,
     registry: &ItemRegistry,
     recipe: &Recipe,
     i: usize,
 ) {
-    let (result_name, result_color) = match registry.get(recipe.result) {
-        Some(d) => (d.display_name.clone(), d.material.base_color()),
-        None => ("???".to_string(), Color::WHITE),
-    };
+    let result_def = registry.get(recipe.result);
+    let result_name = result_def
+        .map(|d| d.display_name.clone())
+        .unwrap_or_else(|| "???".to_string());
 
     panel
         .spawn((
@@ -445,18 +498,10 @@ fn spawn_recipe_row(
                 b.spawn(body_text(assets, &label, 11.0, TEXT_GOLD_DIM));
             });
 
-            // Result swatch
-            row.spawn((
-                Node {
-                    width: Val::Px(26.0),
-                    height: Val::Px(26.0),
-                    flex_shrink: 0.0,
-                    ..default()
-                },
-                BackgroundColor(result_color),
-                BorderColor(Color::srgba(0.0, 0.0, 0.0, 0.35)),
-                BorderRadius::all(Val::Px(5.0)),
-            ));
+            // Result swatch (icon if available, else colour)
+            if let Some(def) = result_def {
+                spawn_item_swatch(row, asset_server, def, 30.0);
+            }
 
             // Result name + count -- fixed column so all rows align
             row.spawn((
@@ -490,10 +535,10 @@ fn spawn_recipe_row(
             },))
                 .with_children(|chips| {
                     for (j, (item, count)) in recipe.ingredients.iter().enumerate() {
-                        let (ing_name, ing_color) = match registry.get(*item) {
-                            Some(d) => (d.display_name.clone(), d.material.base_color()),
-                            None => ("???".to_string(), Color::WHITE),
-                        };
+                        let ing_def = registry.get(*item);
+                        let ing_name = ing_def
+                            .map(|d| d.display_name.clone())
+                            .unwrap_or_else(|| "???".to_string());
                         chips
                             .spawn((
                                 CraftingIngredientChip {
@@ -512,15 +557,9 @@ fn spawn_recipe_row(
                                 BorderRadius::all(Val::Px(5.0)),
                             ))
                             .with_children(|chip| {
-                                chip.spawn((
-                                    Node {
-                                        width: Val::Px(9.0),
-                                        height: Val::Px(9.0),
-                                        ..default()
-                                    },
-                                    BackgroundColor(ing_color),
-                                    BorderRadius::all(Val::Px(2.0)),
-                                ));
+                                if let Some(d) = ing_def {
+                                    spawn_item_swatch(chip, asset_server, d, 18.0);
+                                }
                                 chip.spawn(body_text(
                                     assets,
                                     &format!("{}\u{00A0}x{}", ing_name, count),
@@ -559,75 +598,88 @@ fn spawn_recipe_row(
 fn spawn_build_hotbar(
     commands: &mut Commands,
     assets: &UiAssets,
+    asset_server: &AssetServer,
     registry: &ItemRegistry,
     placeables: &PlaceableItems,
 ) {
-    // Vertical side rail on the left edge (Cozy Grove style) -- eliminates the
-    // overlap-with-inventory issue by putting the build hotbar on a different edge.
+    // Bottom horizontal hotbar with wrap. The inventory hotbar is hidden during
+    // build mode (see `update_inventory_display`), so this slot location is
+    // free of overlap. Wrap means 14+ placeables can reflow onto a second row
+    // without running off the screen.
     commands
         .spawn((
             BuildHotbar,
             Node {
                 position_type: PositionType::Absolute,
-                left: Val::Px(16.0),
-                top: Val::Percent(50.0),
-                margin: UiRect { top: Val::Px(-220.0), ..default() },
-                flex_direction: FlexDirection::Column,
+                bottom: Val::Px(20.0),
+                width: Val::Percent(100.0),
+                justify_content: JustifyContent::Center,
+                align_items: AlignItems::End,
+                flex_direction: FlexDirection::Row,
+                flex_wrap: FlexWrap::WrapReverse,
+                column_gap: Val::Px(6.0),
                 row_gap: Val::Px(6.0),
+                padding: UiRect::axes(Val::Px(40.0), Val::Px(0.0)),
                 ..default()
             },
             Visibility::Hidden,
         ))
         .with_children(|bar| {
             for (i, item_id) in placeables.0.iter().enumerate() {
-                let color = registry
-                    .get(*item_id)
-                    .map(|d| d.material.base_color())
-                    .unwrap_or(Color::WHITE);
+                let def = registry.get(*item_id);
+                let color = def.map(|d| d.material.base_color()).unwrap_or(Color::WHITE);
+                let name = def
+                    .map(|d| d.display_name.clone())
+                    .unwrap_or_else(|| "?".into());
                 bar.spawn((
                     Button,
                     BuildHotbarSlot { index: i },
                     Node {
-                        width: Val::Px(60.0),
-                        height: Val::Px(60.0),
-                        flex_direction: FlexDirection::Row,
+                        width: Val::Px(74.0),
+                        height: Val::Px(80.0),
+                        flex_direction: FlexDirection::Column,
                         justify_content: JustifyContent::Center,
                         align_items: AlignItems::Center,
-                        padding: UiRect::all(Val::Px(8.0)),
+                        padding: UiRect::all(Val::Px(6.0)),
+                        row_gap: Val::Px(2.0),
                         ..default()
                     },
                     slot_image(assets.panel_dark.clone()),
                     BorderColor(Color::srgba(0.0, 0.0, 0.0, 0.0)),
                 ))
                 .with_children(|slot| {
-                    // Item swatch
-                    slot.spawn((
-                        Node {
-                            width: Val::Px(28.0),
-                            height: Val::Px(28.0),
-                            ..default()
-                        },
-                        BackgroundColor(color),
-                        BorderRadius::all(Val::Px(6.0)),
-                    ));
-                    // Shortcut number (top-right corner of slot)
+                    // Shortcut number (top-left absolute, doesn't affect column layout)
                     let label = if i < 9 { format!("{}", i + 1) } else { String::new() };
                     slot.spawn((
                         Node {
                             position_type: PositionType::Absolute,
                             top: Val::Px(2.0),
-                            left: Val::Px(4.0),
+                            left: Val::Px(5.0),
                             ..default()
                         },
                         body_text(assets, &label, 9.0, TEXT_GOLD_DIM),
                     ));
-                    // Count (bottom-right corner)
+                    // Item swatch (icon if available, else colour)
+                    if let Some(d) = def {
+                        spawn_item_swatch(slot, asset_server, d, 36.0);
+                    }
+                    // Item name (small text)
+                    slot.spawn((
+                        Text::new(name),
+                        TextFont {
+                            font: assets.body_font.clone(),
+                            font_size: 9.0,
+                            ..default()
+                        },
+                        TextColor(TEXT_GOLD),
+                    ));
+                    // Count (bottom-right absolute so it doesn't shift the swatch)
                     slot.spawn((
                         BuildHotbarCount { index: i },
                         Node {
                             position_type: PositionType::Absolute,
                             bottom: Val::Px(2.0),
-                            right: Val::Px(4.0),
+                            right: Val::Px(6.0),
                             ..default()
                         },
                         body_text(assets, "0", 12.0, TEXT_GOLD),
@@ -724,15 +776,13 @@ fn update_inventory_display(
     // Hide the whole inventory hotbar whenever a center panel (build mode or
     // crafting) is open, so it doesn't peek out from below.
     let hide_bar = build_mode.is_some() || crafting.open;
-    if let Ok(mut vis) = bar_vis.single_mut() {
-        let target = if hide_bar {
-            Visibility::Hidden
-        } else {
-            Visibility::Inherited
-        };
-        if *vis != target {
-            *vis = target;
-        }
+    let bar_target = if hide_bar {
+        Visibility::Hidden
+    } else {
+        Visibility::Inherited
+    };
+    for mut vis in &mut bar_vis {
+        *vis = bar_target;
     }
 
     let inv_dirty = inv_events.read().next().is_some();
@@ -1013,11 +1063,49 @@ fn subtree_has_active_interaction(
     false
 }
 
+/// Click an inventory slot containing a placeable item to enter placing mode
+/// without pressing B. Non-placeable items are ignored. Acts as both
+/// "start placing" (when no BuildMode) and "switch selection" (when one
+/// already exists).
+fn handle_inventory_placeable_clicks(
+    mut commands: Commands,
+    mut build_mode: Option<ResMut<BuildMode>>,
+    placeables: Res<PlaceableItems>,
+    inventory: Res<Inventory>,
+    registry: Res<ItemRegistry>,
+    asset_server: Res<AssetServer>,
+    slots: Query<(&Interaction, &InventorySlot), Changed<Interaction>>,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut materials: ResMut<Assets<StandardMaterial>>,
+) {
+    for (interaction, slot) in &slots {
+        if !matches!(interaction, Interaction::Pressed) {
+            continue;
+        }
+        if !placeables.0.contains(&slot.item) || inventory.count(slot.item) == 0 {
+            continue;
+        }
+        crate::building::enter_placing_with(
+            &mut commands,
+            build_mode.as_deref_mut(),
+            &placeables,
+            &registry,
+            &asset_server,
+            &mut meshes,
+            &mut materials,
+            slot.item,
+        );
+        // Only one click per frame.
+        break;
+    }
+}
+
 fn handle_build_hotbar_clicks(
     build_mode: Option<ResMut<BuildMode>>,
     placeables: Res<PlaceableItems>,
     inventory: Res<Inventory>,
     registry: Res<ItemRegistry>,
+    asset_server: Res<AssetServer>,
     slots: Query<(&Interaction, &BuildHotbarSlot), Changed<Interaction>>,
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
@@ -1041,6 +1129,7 @@ fn handle_build_hotbar_clicks(
             &mut mode,
             item,
             &registry,
+            &asset_server,
             &mut meshes,
             &mut materials,
         );

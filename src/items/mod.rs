@@ -14,7 +14,7 @@ pub mod tags;
 
 use bevy::prelude::*;
 
-pub use form::Form;
+pub use form::{Form, SnapMode};
 pub use material::{Material, MaterialFamily};
 pub use registry::{ItemDef, ItemId, ItemRegistry};
 pub use tags::ItemTags;

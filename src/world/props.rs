@@ -270,6 +270,7 @@ impl PropAssets {
 pub fn spawn_chunk_props(
     mut commands: Commands,
     asset_server: Res<AssetServer>,
+    chunk_manager: Res<crate::world::chunks::ChunkManager>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
     mut chunk_events: EventReader<ChunkLoaded>,
@@ -279,7 +280,7 @@ pub fn spawn_chunk_props(
         return;
     }
 
-    let noise = WorldNoise::new(42);
+    let noise = WorldNoise::new(chunk_manager.seed);
     let prop_noise = noise.moisture; // reuse for prop placement
     let variety_noise = noise.temperature; // reuse for variety
     let assets = PropAssets::new(&mut meshes, &mut materials);

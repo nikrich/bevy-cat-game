@@ -1,6 +1,17 @@
 use bevy::prelude::*;
 use serde::{Deserialize, Serialize};
 
+/// Where on the tile grid the build preview snaps to.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SnapMode {
+    /// Tile centre (integer x/z). Used for floors, roofs, and free-standing
+    /// furniture so they sit in the middle of a tile.
+    Cell,
+    /// Half-grid (multiples of 0.5). Lets walls/doors/windows sit ON the line
+    /// between two tiles so a 4-wall room has clean corners.
+    Edge,
+}
+
 /// Visual / behavioural archetype. Pairs with a `Material` to form an item.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum Form {
@@ -91,21 +102,119 @@ impl Form {
         }
     }
 
-    /// glTF scene path for placed-building rendering. When `Some`, the building
-    /// system spawns a `SceneRoot` instead of the procedural `make_mesh()` cube.
-    /// When `None`, the procedural primitive is used as a fallback.
-    pub fn scene_path(self) -> Option<&'static str> {
+    /// Pre-rendered preview PNG used as the UI icon for this Form. Building
+    /// placeables intentionally fall through to the procedural shape swatch
+    /// (see `icon_shape()`) since the procedural primitive doesn't match the
+    /// Kenney 3D preview. Raws + Stew keep their Kenney photos.
+    pub fn icon_path(self) -> Option<&'static str> {
         match self {
-            Form::Fence => Some("models/kenney_survival/fence.glb#Scene0"),
-            Form::Floor => Some("models/kenney_survival/floor.glb#Scene0"),
-            Form::Door => Some("models/kenney_survival/fence-doorway.glb#Scene0"),
-            Form::Wall => Some("models/kenney_survival/structure-metal-wall.glb#Scene0"),
-            Form::Lantern => Some("models/kenney_survival/campfire-pit.glb#Scene0"),
-            Form::Bench => Some("models/kenney_survival/workbench.glb#Scene0"),
-            Form::Table => Some("models/kenney_survival/workbench.glb#Scene0"),
-            Form::Stew => Some("models/kenney_food/pot-stew.glb#Scene0"),
-            // Raws and decor without a clean Kenney equivalent stay procedural for now.
+            // Raws gathered from the world -- Kenney photos match the prop.
+            Form::Log => Some("ui/icons/survival/tree-log.png"),
+            Form::StoneChunk => Some("ui/icons/survival/rock-a.png"),
+            Form::Mushroom => Some("ui/icons/food/mushroom.png"),
+            Form::BushSprig => Some("ui/icons/survival/grass-large.png"),
+
+            // Refined materials.
+            Form::Plank => Some("ui/icons/survival/resource-planks.png"),
+            Form::Brick => Some("ui/icons/survival/resource-stone.png"),
+
+            // Stew is food, fine to keep the pot icon.
+            Form::Stew => Some("ui/icons/food/pot-stew.png"),
+
+            // Everything placeable falls back to a procedural shape swatch.
             _ => None,
+        }
+    }
+
+    /// Returns `(width_norm, height_norm, corner_radius_norm)` describing the
+    /// rough silhouette of the procedural primitive (from `make_mesh()`),
+    /// normalised to a unit box. UI swatches scale this into their slot so a
+    /// Wall reads as a tall thin rectangle, a Floor as a flat wide one, a
+    /// Lantern as a tall capsule, etc.
+    pub fn icon_shape(self) -> (f32, f32, f32) {
+        match self {
+            // (w, h, radius_frac of min(w,h))
+            Form::Floor => (1.0, 0.18, 0.10),
+            Form::Wall => (0.55, 1.0, 0.08),
+            Form::Door => (0.50, 1.0, 0.15),
+            Form::Window => (0.95, 0.85, 0.18),
+            Form::Roof => (1.0, 0.20, 0.08),
+            Form::Fence => (1.0, 0.55, 0.10),
+            Form::Bench => (1.0, 0.40, 0.18),
+            Form::Lantern => (0.30, 1.0, 0.50),    // tall capsule
+            Form::Table => (1.0, 0.55, 0.18),
+            Form::Chair => (0.55, 0.90, 0.18),
+            Form::FlowerPot => (0.55, 0.55, 0.45), // round pot
+            Form::Wreath => (0.85, 0.85, 0.50),    // ring
+            _ => (1.0, 1.0, 0.20),
+        }
+    }
+
+    /// glTF scene path for placed-building rendering. Currently `None` for
+    /// every placeable -- procedural primitives via `make_mesh()` until proper
+    /// hand-authored assets land.
+    pub fn scene_path(self) -> Option<&'static str> {
+        None
+    }
+
+    /// SceneRoot scale applied at placement. All placeables are procedural
+    /// primitives sized in `make_mesh()` for now -- proper 3D building
+    /// assets will replace them later.
+    pub fn placement_scale(self) -> f32 {
+        1.0
+    }
+
+    /// How the build preview snaps to the world grid. Floors and roofs sit at
+    /// tile *centres*; walls, doors, and windows sit on tile *edges* so houses
+    /// can have clean corners.
+    pub fn snap_mode(self) -> SnapMode {
+        match self {
+            Form::Wall | Form::Door | Form::Window => SnapMode::Edge,
+            _ => SnapMode::Cell,
+        }
+    }
+
+    /// World-space distance from the spawn origin to the bottom of the visible
+    /// mesh -- i.e. set translation.y = ground + placement_lift() and the model
+    /// will look like it's resting on the ground. Calibrated to `make_mesh()`
+    /// dimensions (centre-origin cuboids, so half the model height).
+    pub fn placement_lift(self) -> f32 {
+        match self {
+            Form::Floor => 0.06,
+            Form::Wall => 0.80,
+            Form::Door => 0.85,
+            Form::Window => 0.40,
+            Form::Roof => 0.09,
+            Form::Fence => 0.30,
+            Form::Bench => 0.175,
+            Form::Lantern => 0.25,
+            Form::Table => 0.25,
+            Form::Chair => 0.35,
+            Form::FlowerPot => 0.125,
+            Form::Wreath => 0.10,
+            Form::Stew => 0.22,
+            _ => 0.05,
+        }
+    }
+
+    /// World-space visible height of the placed model. Stacking the next piece
+    /// above this one means new_y = existing_bottom + placement_height().
+    pub fn placement_height(self) -> f32 {
+        match self {
+            Form::Floor => 0.12,
+            Form::Wall => 1.60,
+            Form::Door => 1.70,
+            Form::Window => 0.80,
+            Form::Roof => 0.18,
+            Form::Fence => 0.60,
+            Form::Bench => 0.35,
+            Form::Lantern => 0.50,
+            Form::Table => 0.50,
+            Form::Chair => 0.70,
+            Form::FlowerPot => 0.25,
+            Form::Wreath => 0.40,
+            Form::Stew => 0.44,
+            _ => 0.30,
         }
     }
 
