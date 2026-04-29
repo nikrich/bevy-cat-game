@@ -1,268 +1,270 @@
+//! Player input via `leafwing-input-manager` (W0.5 / DEC-013, supersedes
+//! DEC-007). The previous hand-rolled `GameInput` resource is gone; every
+//! game system now reads `Res<ActionState<Action>>` for keys/buttons and
+//! `Res<CursorState>` for cursor-derived state (world position under cursor,
+//! whether the pointer is over UI, whether the most recent input came from a
+//! gamepad). The iso-rotated movement vector is exposed via the
+//! [`iso_movement`] helper so consumers don't repeat the rotation maths.
+//!
+//! Bindings are intentionally permissive: most actions accept multiple
+//! inputs (KB+M *and* gamepad) so the spec's controller-first parity goal
+//! (spec §4.4/§4.5) is satisfied without per-system branching.
+//!
+//! `Place` and `Interact` both bind to `MouseButton::Left`. The UI-gating
+//! pass in [`update_cursor_state`] suppresses world-bound left-clicks when
+//! the pointer is over UI or the crafting menu is open, so menu clicks
+//! never fall through to gather/place.
+
 use bevy::prelude::*;
 use bevy::window::PrimaryWindow;
+use leafwing_input_manager::plugin::InputManagerSystem;
+use leafwing_input_manager::prelude::*;
 
 use crate::camera::GameCamera;
+use crate::crafting::CraftingState;
 
 pub struct InputPlugin;
 
 impl Plugin for InputPlugin {
     fn build(&self, app: &mut App) {
-        app.init_resource::<GameInput>()
+        app.add_plugins(InputManagerPlugin::<Action>::default())
+            .init_resource::<ActionState<Action>>()
+            .insert_resource(Action::default_input_map())
+            .init_resource::<CursorState>()
             .add_systems(
                 PreUpdate,
-                (
-                    clear_input,
-                    read_keyboard_mouse,
-                    read_gamepad,
-                    compute_cursor_world,
-                )
-                    .chain(),
-            )
-            .add_systems(
-                PreUpdate,
-                resolve_world_click
-                    .after(compute_cursor_world)
-                    .after(bevy::ui::UiSystems::Focus),
+                (compute_cursor_world, update_cursor_state)
+                    .chain()
+                    .after(InputManagerSystem::Update),
             );
     }
 }
 
-/// Unified input state read by all game systems.
+/// Every action the game cares about. Exhaustive per spec §4.4/§4.5 plus
+/// game-specific verbs (Nap/Examine/Mark/ToggleCraft/Save) and per-slot
+/// hotbar bindings. Crouch/ZoomIn/ZoomOut are declared so the binding map
+/// is complete; their consumers ship in later phases.
+#[derive(Actionlike, PartialEq, Eq, Hash, Clone, Copy, Debug, Reflect)]
+pub enum Action {
+    #[actionlike(DualAxis)]
+    Move,
+    Jump,
+    Sprint,
+    Crouch,
+    Interact,
+    Place,
+    RotatePiece,
+    ToggleBuild,
+    ToggleInventory,
+    ToggleCraft,
+    Save,
+    Nap,
+    Examine,
+    Mark,
+    MenuUp,
+    MenuDown,
+    MenuConfirm,
+    Hotbar1,
+    Hotbar2,
+    Hotbar3,
+    Hotbar4,
+    Hotbar5,
+    Hotbar6,
+    Hotbar7,
+    Hotbar8,
+    Hotbar9,
+    HotbarNext,
+    HotbarPrev,
+    ZoomIn,
+    ZoomOut,
+}
+
+impl Action {
+    pub fn default_input_map() -> InputMap<Self> {
+        let mut map = InputMap::default();
+
+        // Movement: WASD + arrow keys, gamepad left stick.
+        map.insert_dual_axis(Self::Move, VirtualDPad::wasd());
+        map.insert_dual_axis(Self::Move, VirtualDPad::arrow_keys());
+        map.insert_dual_axis(Self::Move, GamepadStick::LEFT);
+
+        // Core verbs. Both keyboard and gamepad bindings are present so
+        // controller-first parity holds out of the box.
+        map.insert(Self::Jump, KeyCode::Space);
+        map.insert(Self::Jump, GamepadButton::South);
+
+        map.insert(Self::Sprint, KeyCode::ShiftLeft);
+        map.insert(Self::Sprint, KeyCode::ShiftRight);
+        map.insert(Self::Sprint, GamepadButton::LeftThumb);
+
+        map.insert(Self::Crouch, KeyCode::ControlLeft);
+        map.insert(Self::Crouch, GamepadButton::RightThumb);
+
+        // Mouse-left is intentionally *not* bound to Interact/Place: mouse
+        // clicks go through `CursorState::world_click` so the UI focus pass
+        // can suppress them when the pointer is over UI. Keyboard/gamepad
+        // bindings here remain unconditional.
+        map.insert(Self::Interact, KeyCode::KeyE);
+        map.insert(Self::Interact, GamepadButton::South);
+
+        map.insert(Self::Place, KeyCode::Space);
+        map.insert(Self::Place, GamepadButton::South);
+
+        map.insert(Self::RotatePiece, KeyCode::KeyR);
+        map.insert(Self::RotatePiece, GamepadButton::East);
+
+        map.insert(Self::ToggleBuild, KeyCode::KeyB);
+        map.insert(Self::ToggleBuild, GamepadButton::North);
+
+        map.insert(Self::ToggleInventory, KeyCode::KeyI);
+        map.insert(Self::ToggleInventory, GamepadButton::Select);
+
+        map.insert(Self::ToggleCraft, KeyCode::Tab);
+        map.insert(Self::ToggleCraft, GamepadButton::West);
+
+        map.insert(Self::Save, KeyCode::F5);
+        map.insert(Self::Save, GamepadButton::Start);
+
+        // Cat verbs (Phase B).
+        map.insert(Self::Nap, KeyCode::KeyZ);
+        map.insert(Self::Examine, KeyCode::KeyX);
+        map.insert(Self::Mark, KeyCode::KeyC);
+
+        // Menu navigation. Inputs deliberately overlap with movement keys
+        // since menu nav and gameplay never run in the same frame; the
+        // consumer (UI / pause menu) gates by state.
+        map.insert(Self::MenuUp, KeyCode::KeyW);
+        map.insert(Self::MenuUp, KeyCode::ArrowUp);
+        map.insert(Self::MenuUp, GamepadButton::DPadUp);
+        map.insert(Self::MenuDown, KeyCode::KeyS);
+        map.insert(Self::MenuDown, KeyCode::ArrowDown);
+        map.insert(Self::MenuDown, GamepadButton::DPadDown);
+        map.insert(Self::MenuConfirm, KeyCode::Enter);
+        map.insert(Self::MenuConfirm, KeyCode::KeyE);
+        map.insert(Self::MenuConfirm, GamepadButton::South);
+
+        // Hotbar slots.
+        let hotbar_keys = [
+            (Self::Hotbar1, KeyCode::Digit1),
+            (Self::Hotbar2, KeyCode::Digit2),
+            (Self::Hotbar3, KeyCode::Digit3),
+            (Self::Hotbar4, KeyCode::Digit4),
+            (Self::Hotbar5, KeyCode::Digit5),
+            (Self::Hotbar6, KeyCode::Digit6),
+            (Self::Hotbar7, KeyCode::Digit7),
+            (Self::Hotbar8, KeyCode::Digit8),
+            (Self::Hotbar9, KeyCode::Digit9),
+        ];
+        for (action, key) in hotbar_keys {
+            map.insert(action, key);
+        }
+        map.insert(Self::HotbarNext, GamepadButton::RightTrigger);
+        map.insert(Self::HotbarPrev, GamepadButton::LeftTrigger);
+
+        // Camera zoom — declared for binding completeness; consumer lands
+        // when the camera grows zoom controls.
+        map.insert(Self::ZoomIn, KeyCode::Equal);
+        map.insert(Self::ZoomOut, KeyCode::Minus);
+
+        map
+    }
+}
+
+/// Cursor-derived state that leafwing doesn't track on its own. This is
+/// where `compute_cursor_world` and the UI focus pass deposit their results
+/// so consumers can ask one resource instead of recomputing per frame.
 #[derive(Resource, Default)]
-pub struct GameInput {
-    /// Movement direction (normalized, already rotated for isometric camera)
-    pub movement: Vec2,
-    /// Raw movement before iso rotation (for UI navigation)
-    pub raw_movement: Vec2,
-
-    // Actions -- true on the frame they were triggered
-    pub interact: bool,
-    pub toggle_craft: bool,
-    pub toggle_build: bool,
-    pub place: bool,
-    pub rotate: bool,
-    pub save: bool,
-    pub menu_up: bool,
-    pub menu_down: bool,
-    pub menu_confirm: bool,
-
-    /// Build slot selection (1-5), None if not pressed
-    pub build_select: Option<usize>,
-
-    // Phase B cat verbs.
-    /// Z held: cat curls up to nap (banked after a hold-window).
-    pub nap_held: bool,
-    /// X tapped: cat examines the nearest notable thing.
-    pub examine: bool,
-    /// Shift held: cat moves at stalking speed (lower stance, slower).
-    pub stalk_held: bool,
-    /// C held: cat marks this cell as their own (idempotent, banked after a hold).
-    pub mark_held: bool,
-
-    /// World position under mouse cursor (for placement)
+pub struct CursorState {
+    /// World position under the mouse cursor, raycast against the Y=0 plane.
     pub cursor_world: Option<Vec3>,
-
-    /// Whether input is coming from gamepad (affects UI hints)
-    pub using_gamepad: bool,
-
-    /// True if cursor is hovering or pressing any interactive UI node this frame.
-    /// Set after UI focus has been resolved so consumers can disambiguate UI clicks from world clicks.
+    /// True when the pointer is over an interactive UI node this frame.
     pub pointer_over_ui: bool,
-
-    /// Raw left-mouse just-pressed state. Use this when you want UI clicks too;
-    /// otherwise read `interact` / `place` which are gated by `pointer_over_ui`.
-    pub mouse_left_just_pressed: bool,
+    /// True if the most recent meaningful input came from a gamepad.
+    pub using_gamepad: bool,
+    /// True only if a left-mouse press this frame should be treated as a
+    /// world click. False when the pointer is over UI or the crafting menu
+    /// is open.
+    pub world_click: bool,
 }
 
-fn clear_input(mut input: ResMut<GameInput>) {
-    *input = GameInput::default();
-}
-
-fn read_keyboard_mouse(
-    keyboard: Res<ButtonInput<KeyCode>>,
-    mouse: Res<ButtonInput<MouseButton>>,
-    mut input: ResMut<GameInput>,
-) {
-    // Movement
-    let mut dir = Vec2::ZERO;
-    if keyboard.pressed(KeyCode::KeyW) || keyboard.pressed(KeyCode::ArrowUp) {
-        dir.y += 1.0;
+/// Iso-rotated movement vector. Convert leafwing's raw `Move` axis pair into
+/// the vector all the world-space gameplay systems were tuned for.
+pub fn iso_movement(action_state: &ActionState<Action>) -> Vec2 {
+    let raw = action_state.clamped_axis_pair(&Action::Move);
+    if raw.length_squared() < 0.0001 {
+        return Vec2::ZERO;
     }
-    if keyboard.pressed(KeyCode::KeyS) || keyboard.pressed(KeyCode::ArrowDown) {
-        dir.y -= 1.0;
-    }
-    if keyboard.pressed(KeyCode::KeyA) || keyboard.pressed(KeyCode::ArrowLeft) {
-        dir.x -= 1.0;
-    }
-    if keyboard.pressed(KeyCode::KeyD) || keyboard.pressed(KeyCode::ArrowRight) {
-        dir.x += 1.0;
-    }
-
-    if dir.length_squared() > 0.0 {
-        dir = dir.normalize();
-    }
-    input.raw_movement = dir;
-
-    // Rotate for isometric camera
+    let dir = raw.normalize();
     let angle = std::f32::consts::FRAC_PI_4;
-    input.movement = Vec2::new(
+    Vec2::new(
         dir.x * angle.cos() - dir.y * angle.sin(),
         dir.x * angle.sin() + dir.y * angle.cos(),
-    );
-
-    // Actions -- mouse-derived contributions to interact/place are deferred to
-    // `resolve_world_click` so UI clicks don't fall through to the world.
-    input.mouse_left_just_pressed = mouse.just_pressed(MouseButton::Left);
-    input.interact = keyboard.just_pressed(KeyCode::KeyE);
-    input.toggle_craft = keyboard.just_pressed(KeyCode::Tab);
-    input.toggle_build = keyboard.just_pressed(KeyCode::KeyB);
-    input.place = keyboard.just_pressed(KeyCode::Space);
-    input.rotate = keyboard.just_pressed(KeyCode::KeyR);
-    input.save = keyboard.just_pressed(KeyCode::F5);
-
-    // Cat verbs (Phase B).
-    input.nap_held = keyboard.pressed(KeyCode::KeyZ);
-    input.examine = keyboard.just_pressed(KeyCode::KeyX);
-    input.stalk_held =
-        keyboard.pressed(KeyCode::ShiftLeft) || keyboard.pressed(KeyCode::ShiftRight);
-    input.mark_held = keyboard.pressed(KeyCode::KeyC);
-
-    // Menu navigation (W/S when in menus)
-    input.menu_up = keyboard.just_pressed(KeyCode::KeyW) || keyboard.just_pressed(KeyCode::ArrowUp);
-    input.menu_down = keyboard.just_pressed(KeyCode::KeyS) || keyboard.just_pressed(KeyCode::ArrowDown);
-    input.menu_confirm = keyboard.just_pressed(KeyCode::KeyE) || keyboard.just_pressed(KeyCode::Enter);
-
-    // Build slot
-    let slot_keys = [
-        KeyCode::Digit1,
-        KeyCode::Digit2,
-        KeyCode::Digit3,
-        KeyCode::Digit4,
-        KeyCode::Digit5,
-    ];
-    for (i, key) in slot_keys.iter().enumerate() {
-        if keyboard.just_pressed(*key) {
-            input.build_select = Some(i);
-        }
-    }
+    )
 }
 
-fn read_gamepad(
-    gamepads: Query<&Gamepad>,
-    mut input: ResMut<GameInput>,
-) {
-    let Ok(gamepad) = gamepads.single() else {
-        return;
-    };
-
-    input.using_gamepad = true;
-
-    // Left stick movement
-    let stick_x = gamepad.get(GamepadAxis::LeftStickX).unwrap_or(0.0);
-    let stick_y = gamepad.get(GamepadAxis::LeftStickY).unwrap_or(0.0);
-
-    let deadzone = 0.15;
-    let raw = if stick_x.abs() > deadzone || stick_y.abs() > deadzone {
-        let dir = Vec2::new(stick_x, stick_y).normalize();
-        input.raw_movement = dir;
-        dir
-    } else {
+/// Iso-axis movement before the camera rotation, useful for UI nav.
+pub fn raw_movement(action_state: &ActionState<Action>) -> Vec2 {
+    let raw = action_state.clamped_axis_pair(&Action::Move);
+    if raw.length_squared() < 0.0001 {
         Vec2::ZERO
-    };
-
-    if raw.length_squared() > 0.0 {
-        let angle = std::f32::consts::FRAC_PI_4;
-        input.movement = Vec2::new(
-            raw.x * angle.cos() - raw.y * angle.sin(),
-            raw.x * angle.sin() + raw.y * angle.cos(),
-        );
-    }
-
-    // Buttons
-    if gamepad.just_pressed(GamepadButton::South) {
-        input.interact = true;
-        input.menu_confirm = true;
-        input.place = true;
-    }
-    if gamepad.just_pressed(GamepadButton::West) {
-        input.toggle_craft = true;
-    }
-    if gamepad.just_pressed(GamepadButton::North) {
-        input.toggle_build = true;
-    }
-    if gamepad.just_pressed(GamepadButton::East) {
-        input.rotate = true;
-    }
-
-    // D-pad for menu navigation
-    if gamepad.just_pressed(GamepadButton::DPadUp) {
-        input.menu_up = true;
-    }
-    if gamepad.just_pressed(GamepadButton::DPadDown) {
-        input.menu_down = true;
-    }
-
-    // Bumpers for build slot cycling
-    if gamepad.just_pressed(GamepadButton::RightTrigger) {
-        input.build_select = Some(99); // signal "next"
-    }
-    if gamepad.just_pressed(GamepadButton::LeftTrigger) {
-        input.build_select = Some(98); // signal "prev"
-    }
-
-    if gamepad.just_pressed(GamepadButton::Start) {
-        input.save = true;
+    } else {
+        raw.normalize()
     }
 }
 
-/// Raycast from mouse cursor through camera to find world position on terrain plane.
 fn compute_cursor_world(
     windows: Query<&Window, With<PrimaryWindow>>,
     camera_query: Query<(&Camera, &GlobalTransform), With<GameCamera>>,
-    mut input: ResMut<GameInput>,
+    mut cursor: ResMut<CursorState>,
 ) {
+    cursor.cursor_world = None;
     let Ok(window) = windows.single() else { return };
     let Ok((camera, camera_gt)) = camera_query.single() else { return };
+    let Some(cursor_pos) = window.cursor_position() else { return };
+    let Ok(ray) = camera.viewport_to_world(camera_gt, cursor_pos) else { return };
 
-    let Some(cursor_pos) = window.cursor_position() else {
-        return;
-    };
-
-    // Cast ray from camera through cursor
-    let Ok(ray) = camera.viewport_to_world(camera_gt, cursor_pos) else {
-        return;
-    };
-
-    // Intersect with Y=0 plane (approximate terrain level)
     let denom = ray.direction.y;
     if denom.abs() < 0.001 {
         return;
     }
-
     let t = -ray.origin.y / denom;
     if t < 0.0 {
         return;
     }
-
-    let world_pos = ray.origin + *ray.direction * t;
-    input.cursor_world = Some(world_pos);
+    cursor.cursor_world = Some(ray.origin + *ray.direction * t);
 }
 
-/// Decides whether a left-mouse press counts as a world click (gather/place) or a UI click.
-/// Runs after Bevy has updated `Interaction` for UI nodes this frame.
-fn resolve_world_click(
+fn update_cursor_state(
     interactions: Query<&Interaction>,
-    crafting: Res<crate::crafting::CraftingState>,
-    mut input: ResMut<GameInput>,
+    crafting: Res<CraftingState>,
+    mouse: Res<ButtonInput<MouseButton>>,
+    gamepads: Query<&Gamepad>,
+    mut cursor: ResMut<CursorState>,
 ) {
-    let pointer_over_ui = interactions
+    cursor.pointer_over_ui = interactions
         .iter()
         .any(|i| !matches!(i, Interaction::None));
-    input.pointer_over_ui = pointer_over_ui;
 
-    let world_click = input.mouse_left_just_pressed && !pointer_over_ui && !crafting.open;
-    if world_click {
-        input.interact = true;
-        input.place = true;
+    // Mouse-left isn't bound to a leafwing action; we read it raw here so
+    // the UI focus pass can gate world clicks against UI/crafting state in
+    // one central place. Consumers read `cursor.world_click` instead of
+    // `Res<ButtonInput<MouseButton>>` to inherit the gating.
+    cursor.world_click = mouse.just_pressed(MouseButton::Left)
+        && !cursor.pointer_over_ui
+        && !crafting.open;
+
+    // Cheap "is gamepad active" probe: any non-zero stick deflection or any
+    // pressed button on any connected gamepad sets the flag for the frame.
+    let mut gamepad_active = false;
+    for gamepad in &gamepads {
+        let lx = gamepad.get(GamepadAxis::LeftStickX).unwrap_or(0.0);
+        let ly = gamepad.get(GamepadAxis::LeftStickY).unwrap_or(0.0);
+        if lx.abs() > 0.15 || ly.abs() > 0.15 {
+            gamepad_active = true;
+            break;
+        }
+    }
+    if gamepad_active {
+        cursor.using_gamepad = true;
     }
 }

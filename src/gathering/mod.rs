@@ -1,7 +1,9 @@
 use bevy::prelude::*;
 
 use crate::crafting::CraftingState;
-use crate::input::GameInput;
+use leafwing_input_manager::prelude::ActionState;
+
+use crate::input::{Action, CursorState};
 use crate::inventory::{Inventory, InventoryChanged};
 use crate::items::{Form, ItemId, ItemRegistry, Material};
 use crate::player::Player;
@@ -98,7 +100,8 @@ fn detect_nearby_gatherables(
 
 fn gather_on_interact(
     mut commands: Commands,
-    input: Res<GameInput>,
+    action_state: Res<ActionState<Action>>,
+    cursor: Res<CursorState>,
     nearby: Option<Res<NearbyGatherable>>,
     crafting: Res<CraftingState>,
     build_mode: Option<Res<crate::building::BuildMode>>,
@@ -112,7 +115,9 @@ fn gather_on_interact(
         return;
     }
 
-    if input.interact {
+    // Interact triggers from E (key/gamepad) or a left-click that the UI
+    // focus pass already cleared as a world click.
+    if action_state.just_pressed(&Action::Interact) || cursor.world_click {
         inventory.add(nearby.item, 1);
         let new_count = inventory.count(nearby.item);
 

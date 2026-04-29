@@ -2,7 +2,9 @@ use bevy::prelude::*;
 
 pub mod collision;
 
-use crate::input::GameInput;
+use leafwing_input_manager::prelude::ActionState;
+
+use crate::input::{Action, CursorState};
 use crate::inventory::{Inventory, InventoryChanged};
 use crate::items::{ItemId, ItemRegistry, ItemTags};
 use crate::player::Player;
@@ -13,8 +15,7 @@ pub struct BuildingPlugin;
 
 impl Plugin for BuildingPlugin {
     fn build(&self, app: &mut App) {
-        app.add_message::<PlaceEvent>()
-            .init_resource::<PlaceableItems>()
+        app.init_resource::<PlaceableItems>()
             .init_resource::<PickupHold>()
             .init_resource::<PlaceDrag>()
             .add_systems(
@@ -117,15 +118,9 @@ pub struct PlacedBuilding {
 #[derive(Component)]
 struct BuildPreview;
 
-#[derive(Message)]
-pub struct PlaceEvent {
-    pub item: ItemId,
-    pub position: Vec3,
-}
-
 fn toggle_build_mode(
     mut commands: Commands,
-    input: Res<GameInput>,
+    action_state: Res<ActionState<Action>>,
     build_mode: Option<Res<BuildMode>>,
     inventory: Res<Inventory>,
     placeables: Res<PlaceableItems>,
@@ -134,7 +129,7 @@ fn toggle_build_mode(
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
 ) {
-    if !input.toggle_build {
+    if !action_state.just_pressed(&Action::ToggleBuild) {
         return;
     }
 
@@ -218,7 +213,7 @@ pub fn refresh_build_preview(
 
 fn select_build_item(
     mut commands: Commands,
-    input: Res<GameInput>,
+    action_state: Res<ActionState<Action>>,
     mut build_mode: Option<ResMut<BuildMode>>,
     placeables: Res<PlaceableItems>,
     inventory: Res<Inventory>,
@@ -233,16 +228,35 @@ fn select_build_item(
         return;
     }
 
-    if let Some(slot) = input.build_select {
-        let new_idx = match slot {
-            99 => (mode.selected + 1) % n,            // next (gamepad)
-            98 => (mode.selected + n - 1) % n,        // prev (gamepad)
-            i if i < n => i,
-            _ => return,
-        };
-        if let Some(item) = placeables.0.get(new_idx).copied() {
-            if inventory.count(item) > 0 && new_idx != mode.selected {
-                mode.selected = new_idx;
+    // Direct slot selection (1-9 number row).
+    let slot_actions = [
+        Action::Hotbar1,
+        Action::Hotbar2,
+        Action::Hotbar3,
+        Action::Hotbar4,
+        Action::Hotbar5,
+        Action::Hotbar6,
+        Action::Hotbar7,
+        Action::Hotbar8,
+        Action::Hotbar9,
+    ];
+    let mut new_idx: Option<usize> = None;
+    for (i, action) in slot_actions.iter().enumerate() {
+        if action_state.just_pressed(action) && i < n {
+            new_idx = Some(i);
+            break;
+        }
+    }
+    if action_state.just_pressed(&Action::HotbarNext) {
+        new_idx = Some((mode.selected + 1) % n);
+    } else if action_state.just_pressed(&Action::HotbarPrev) {
+        new_idx = Some((mode.selected + n - 1) % n);
+    }
+
+    if let Some(idx) = new_idx {
+        if let Some(item) = placeables.0.get(idx).copied() {
+            if inventory.count(item) > 0 && idx != mode.selected {
+                mode.selected = idx;
                 refresh_build_preview(
                     &mut commands,
                     mode,
@@ -256,13 +270,13 @@ fn select_build_item(
         }
     }
 
-    if input.rotate {
+    if action_state.just_pressed(&Action::RotatePiece) {
         mode.rotation += std::f32::consts::FRAC_PI_2;
     }
 }
 
 fn update_preview(
-    input: Res<GameInput>,
+    cursor: Res<CursorState>,
     drag: Res<PlaceDrag>,
     build_mode: Option<Res<BuildMode>>,
     placeables: Res<PlaceableItems>,
@@ -278,7 +292,7 @@ fn update_preview(
     let Some(def) = registry.get(item) else { return };
     let form = def.form;
 
-    let mut place_pos = if let Some(cursor) = input.cursor_world {
+    let mut place_pos = if let Some(cursor) = cursor.cursor_world {
         cursor
     } else if let Ok(player_gt) = player_query.single() {
         let pos = player_gt.translation();
@@ -340,7 +354,8 @@ fn update_preview(
 fn place_building(
     mut commands: Commands,
     mouse: Res<ButtonInput<MouseButton>>,
-    input: Res<GameInput>,
+    action_state: Res<ActionState<Action>>,
+    cursor: Res<CursorState>,
     crafting: Res<crate::crafting::CraftingState>,
     mut drag: ResMut<PlaceDrag>,
     build_mode: Option<Res<BuildMode>>,
@@ -349,7 +364,6 @@ fn place_building(
     asset_server: Res<AssetServer>,
     mut inventory: ResMut<Inventory>,
     mut inv_events: MessageWriter<InventoryChanged>,
-    mut place_events: MessageWriter<PlaceEvent>,
     previews: Query<&Transform, With<BuildPreview>>,
     placed_q: Query<(&Transform, &PlacedBuilding), Without<BuildPreview>>,
     mut meshes: ResMut<Assets<Mesh>>,
@@ -362,9 +376,9 @@ fn place_building(
     };
 
     // Mouse-held + Space-tap both feed placement. Mouse-held is the drag
-    // path; Space is one-shot via `input.place`.
+    // path; Space (and gamepad South) is one-shot via Action::Place.
     let mouse_held = mouse.pressed(MouseButton::Left);
-    let space_tapped = input.place && !input.mouse_left_just_pressed;
+    let space_tapped = action_state.just_pressed(&Action::Place);
 
     if !mouse_held && !space_tapped {
         reset_drag(&mut drag);
@@ -372,17 +386,17 @@ fn place_building(
     }
 
     // Pause the drag (don't end it) while the cursor is over UI or a menu.
-    if input.pointer_over_ui || crafting.open {
+    if cursor.pointer_over_ui || crafting.open {
         return;
     }
 
     // Cursor over an existing building -> the click is reserved for the
     // hold-to-pickup flow. Don't end the drag; if the player slides off the
     // building onto empty terrain, dragging resumes.
-    if let Some(cursor) = input.cursor_world {
+    if let Some(cursor_pos) = cursor.cursor_world {
         for (tf, _) in &placed_q {
-            let dx = tf.translation.x - cursor.x;
-            let dz = tf.translation.z - cursor.z;
+            let dx = tf.translation.x - cursor_pos.x;
+            let dz = tf.translation.z - cursor_pos.z;
             if (dx * dx + dz * dz).sqrt() <= PICKUP_RADIUS {
                 return;
             }
@@ -392,7 +406,7 @@ fn place_building(
     // Need a fresh world-click signal to *start* the drag so clicking on UI
     // and sliding onto the map doesn't auto-place. Once active, the held
     // mouse (or Space tap) is enough.
-    if !drag.active && !input.place {
+    if !drag.active && !cursor.world_click && !space_tapped {
         return;
     }
 
@@ -412,14 +426,14 @@ fn place_building(
     // lock axis or detect off-axis straying. preview_tf is already projected
     // when axis is set, so grid_key may equal the projected coord; raw_grid
     // tells us where the cursor actually is.
-    let raw_grid = if let Some(cursor) = input.cursor_world {
+    let raw_grid = if let Some(cursor_pos) = cursor.cursor_world {
         let snap = registry.get(placeables.0[mode.selected]).map(|d| d.form.snap_mode());
         let (rx, rz) = match snap {
             Some(crate::items::SnapMode::Edge) => (
-                (cursor.x * 2.0).round() / 2.0,
-                (cursor.z * 2.0).round() / 2.0,
+                (cursor_pos.x * 2.0).round() / 2.0,
+                (cursor_pos.z * 2.0).round() / 2.0,
             ),
-            _ => (cursor.x.round(), cursor.z.round()),
+            _ => (cursor_pos.x.round(), cursor_pos.z.round()),
         };
         ((rx * 100.0).round() as i32, (rz * 100.0).round() as i32)
     } else {
@@ -466,11 +480,6 @@ fn place_building(
     inv_events.write(InventoryChanged {
         item,
         new_count: inventory.count(item),
-    });
-
-    place_events.write(PlaceEvent {
-        item,
-        position: place_pos,
     });
 
     spawn_placed_building(
@@ -555,14 +564,14 @@ pub fn enter_placing_with(
 fn pickup_held_building(
     time: Res<Time>,
     mouse: Res<ButtonInput<MouseButton>>,
-    input: Res<crate::input::GameInput>,
+    cursor: Res<crate::input::CursorState>,
     mut commands: Commands,
     mut inventory: ResMut<Inventory>,
     mut inv_events: MessageWriter<InventoryChanged>,
     mut hold: ResMut<PickupHold>,
     placed: Query<(Entity, &Transform, &PlacedBuilding)>,
 ) {
-    if input.pointer_over_ui {
+    if cursor.pointer_over_ui {
         hold.target = None;
         return;
     }
@@ -570,7 +579,7 @@ fn pickup_held_building(
         hold.target = None;
         return;
     }
-    let Some(cursor) = input.cursor_world else {
+    let Some(cursor_pos) = cursor.cursor_world else {
         hold.target = None;
         return;
     };
@@ -578,8 +587,8 @@ fn pickup_held_building(
     // Find the closest building with the cursor inside its pickup radius.
     let mut closest: Option<(Entity, ItemId, f32)> = None;
     for (entity, tf, building) in &placed {
-        let dx = tf.translation.x - cursor.x;
-        let dz = tf.translation.z - cursor.z;
+        let dx = tf.translation.x - cursor_pos.x;
+        let dz = tf.translation.z - cursor_pos.z;
         let d = (dx * dx + dz * dz).sqrt();
         if d <= PICKUP_RADIUS && closest.map(|c| d < c.2).unwrap_or(true) {
             closest = Some((entity, building.item, d));

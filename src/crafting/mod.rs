@@ -1,6 +1,8 @@
 use bevy::prelude::*;
 
-use crate::input::GameInput;
+use leafwing_input_manager::prelude::ActionState;
+
+use crate::input::Action;
 use crate::inventory::{Inventory, InventoryChanged};
 use crate::items::{Form, ItemId, ItemRegistry, Material};
 
@@ -176,11 +178,11 @@ impl RecipeRegistry {
 }
 
 fn toggle_crafting_menu(
-    input: Res<GameInput>,
+    action_state: Res<ActionState<Action>>,
     mut state: ResMut<CraftingState>,
     recipes: Res<RecipeRegistry>,
 ) {
-    if input.toggle_craft {
+    if action_state.just_pressed(&Action::ToggleCraft) {
         state.open = !state.open;
         state.selected_in_category = 0;
     }
@@ -194,10 +196,10 @@ fn toggle_crafting_menu(
         return;
     }
 
-    if input.menu_down {
+    if action_state.just_pressed(&Action::MenuDown) {
         state.selected_in_category = (state.selected_in_category + 1).min(visible_count - 1);
     }
-    if input.menu_up {
+    if action_state.just_pressed(&Action::MenuUp) {
         state.selected_in_category = state.selected_in_category.saturating_sub(1);
     }
 }
@@ -234,7 +236,7 @@ fn try_craft(
 }
 
 fn handle_crafting(
-    input: Res<GameInput>,
+    action_state: Res<ActionState<Action>>,
     state: Res<CraftingState>,
     recipes: Res<RecipeRegistry>,
     mut inventory: ResMut<Inventory>,
@@ -243,7 +245,7 @@ fn handle_crafting(
     if !state.open {
         return;
     }
-    if input.menu_confirm {
+    if action_state.just_pressed(&Action::MenuConfirm) {
         if let Some((global_idx, _)) =
             recipes.iter_category(state.category).nth(state.selected_in_category)
         {

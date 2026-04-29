@@ -1,6 +1,8 @@
 use bevy::prelude::*;
+use leafwing_input_manager::prelude::ActionState;
+
 use crate::crafting::CraftingState;
-use crate::input::GameInput;
+use crate::input::{iso_movement, Action, CursorState};
 use crate::memory::verbs::CatVerbState;
 use crate::save::LoadedPlayerPos;
 use crate::world::biome::{WorldNoise, SEA_LEVEL};
@@ -48,7 +50,8 @@ fn spawn_player(
 }
 
 pub fn move_player(
-    input: Res<GameInput>,
+    action_state: Res<ActionState<Action>>,
+    cursor: Res<CursorState>,
     time: Res<Time>,
     mut query: Query<&mut Transform, With<Player>>,
     crafting: Res<CraftingState>,
@@ -60,10 +63,10 @@ pub fn move_player(
 
     let mut transform = query.single_mut()?;
 
-    let dir = input.movement;
+    let dir = iso_movement(&action_state);
     if dir.length_squared() > 0.0 {
         let direction = Vec3::new(dir.x, 0.0, -dir.y);
-        let speed = if input.stalk_held {
+        let speed = if action_state.pressed(&Action::Sprint) {
             PLAYER_SPEED * STALK_SPEED_MULT
         } else {
             PLAYER_SPEED
@@ -78,9 +81,9 @@ pub fn move_player(
     }
 
     // In build mode, face toward cursor
-    if let Some(_) = &build_mode {
-        if let Some(cursor) = input.cursor_world {
-            let to_cursor = cursor - transform.translation;
+    if build_mode.is_some() {
+        if let Some(cursor_pos) = cursor.cursor_world {
+            let to_cursor = cursor_pos - transform.translation;
             if to_cursor.length_squared() > 0.1 {
                 let angle = to_cursor.x.atan2(to_cursor.z);
                 transform.rotation = Quat::from_rotation_y(angle);
@@ -149,7 +152,7 @@ fn snap_to_terrain(
 /// visual; reads `CatVerbState` for hold progress so the cat actually moves
 /// through the action rather than snapping at the end.
 fn pose_player(
-    input: Res<GameInput>,
+    action_state: Res<ActionState<Action>>,
     verbs: Res<CatVerbState>,
     time: Res<Time>,
     mut query: Query<&mut Transform, With<Player>>,
@@ -158,7 +161,7 @@ fn pose_player(
 
     let nap_amt = verbs.nap_fraction();
     let mark_amt = verbs.mark_fraction();
-    let stalking = if input.stalk_held { 1.0 } else { 0.0 };
+    let stalking = if action_state.pressed(&Action::Sprint) { 1.0 } else { 0.0 };
 
     // Stack: at rest, scale = (1, 1, 1). Nap shrinks Y toward 0.55 (curl).
     // Mark stretches Y toward 1.15 (alert posture). Stalk shrinks Y toward

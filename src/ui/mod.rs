@@ -693,13 +693,13 @@ fn update_gather_prompt(
     nearby: Option<Res<NearbyGatherable>>,
     crafting: Res<CraftingState>,
     build_mode: Option<Res<BuildMode>>,
-    input: Res<crate::input::GameInput>,
+    cursor: Res<crate::input::CursorState>,
     registry: Res<ItemRegistry>,
     prompt_query: Query<&Children, With<GatherPrompt>>,
     mut text_query: Query<&mut Text>,
 ) {
     let Ok(children) = prompt_query.single() else { return };
-    let gp = input.using_gamepad;
+    let gp = cursor.using_gamepad;
 
     for child in children.iter() {
         if let Ok(mut text) = text_query.get_mut(child) {

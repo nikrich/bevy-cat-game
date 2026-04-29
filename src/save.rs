@@ -127,10 +127,10 @@ fn auto_save(
     chunks: Res<ChunkManager>,
     player_query: Query<&Transform, With<Player>>,
     buildings: Query<(&PlacedBuilding, &Transform)>,
-    input: Res<crate::input::GameInput>,
+    action_state: Res<leafwing_input_manager::prelude::ActionState<crate::input::Action>>,
 ) {
     save_timer.timer.tick(time.delta());
-    let manual_save = input.save;
+    let manual_save = action_state.just_pressed(&crate::input::Action::Save);
 
     if !save_timer.timer.just_finished() && !manual_save {
         return;

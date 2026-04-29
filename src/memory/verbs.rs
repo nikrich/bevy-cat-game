@@ -7,8 +7,10 @@ use bevy::prelude::*;
 
 use crate::animals::Animal;
 use crate::building::PlacedBuilding;
+use leafwing_input_manager::prelude::ActionState;
+
 use crate::crafting::CraftingState;
-use crate::input::GameInput;
+use crate::input::{iso_movement, Action};
 use crate::items::ItemRegistry;
 use crate::player::Player;
 use crate::world::biome::{Biome, WorldNoise};
@@ -52,7 +54,7 @@ fn verbs_blocked(crafting: &CraftingState) -> bool {
 
 fn nap_system(
     time: Res<Time>,
-    input: Res<GameInput>,
+    action_state: Res<ActionState<Action>>,
     crafting: Res<CraftingState>,
     mut state: ResMut<CatVerbState>,
     mut memory: ResMut<WorldMemory>,
@@ -62,10 +64,10 @@ fn nap_system(
 ) {
     let Ok(tf) = player_q.single() else { return };
     let cell = world_to_cell(tf.translation);
-    let moving = input.movement.length_squared() > MOVING_THRESHOLD_SQ;
+    let moving = iso_movement(&action_state).length_squared() > MOVING_THRESHOLD_SQ;
 
     let cancel = verbs_blocked(&crafting)
-        || !input.nap_held
+        || !action_state.pressed(&Action::Nap)
         || moving
         || state.napping_cell.map_or(false, |c| c != cell);
 
@@ -100,7 +102,7 @@ fn nap_system(
 }
 
 fn examine_system(
-    input: Res<GameInput>,
+    action_state: Res<ActionState<Action>>,
     crafting: Res<CraftingState>,
     mut memory: ResMut<WorldMemory>,
     mut journal: ResMut<Journal>,
@@ -111,7 +113,7 @@ fn examine_system(
     animals: Query<(&GlobalTransform, &Animal)>,
     buildings: Query<(&GlobalTransform, &PlacedBuilding)>,
 ) {
-    if !input.examine || verbs_blocked(&crafting) {
+    if !action_state.just_pressed(&Action::Examine) || verbs_blocked(&crafting) {
         return;
     }
     let Ok(tf) = player_q.single() else { return };
@@ -185,7 +187,7 @@ fn examine_system(
 
 fn mark_system(
     time: Res<Time>,
-    input: Res<GameInput>,
+    action_state: Res<ActionState<Action>>,
     crafting: Res<CraftingState>,
     mut state: ResMut<CatVerbState>,
     mut memory: ResMut<WorldMemory>,
@@ -194,10 +196,10 @@ fn mark_system(
 ) {
     let Ok(tf) = player_q.single() else { return };
     let cell = world_to_cell(tf.translation);
-    let moving = input.movement.length_squared() > MOVING_THRESHOLD_SQ;
+    let moving = iso_movement(&action_state).length_squared() > MOVING_THRESHOLD_SQ;
 
     let cancel = verbs_blocked(&crafting)
-        || !input.mark_held
+        || !action_state.pressed(&Action::Mark)
         || moving
         || state.marking_cell.map_or(false, |c| c != cell);
 
