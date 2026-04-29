@@ -90,15 +90,23 @@ impl ChunkData {
 
 /// Authoritative store for terrain vertex state. Mesh and collider are
 /// derivatives, rebuilt by [`regenerate_dirty_chunks`].
+///
+/// `edits` is a persistent overlay that survives chunk unloads and game
+/// saves: it remembers any vertex heights set via [`Terrain::set_vertex_height`]
+/// (i.e. brush edits) so re-loading the chunk re-applies them on top of
+/// the PCG default. The keys are chunk-local indices in `0..CHUNK_CELLS`,
+/// matching the `vertex_owner` mapping used everywhere else.
 #[derive(Resource, Default)]
 pub struct Terrain {
     pub chunks: HashMap<ChunkCoord, ChunkData>,
     pub dirty: HashSet<ChunkCoord>,
+    pub edits: HashMap<ChunkCoord, HashMap<(u8, u8), f32>>,
 }
 
 impl Terrain {
-    /// PCG-fill a chunk's heights/biomes from the noise generator and mark it
-    /// dirty so the regen system rebuilds its mesh + collider.
+    /// PCG-fill a chunk's heights/biomes from the noise generator, then
+    /// re-apply any persisted edits, then mark dirty so the regen system
+    /// rebuilds its mesh + collider.
     pub fn generate_chunk(&mut self, coord: ChunkCoord, noise: &WorldNoise) {
         let mut data = ChunkData::empty();
         let world_offset_x = coord.0 * CHUNK_CELLS;
@@ -115,6 +123,15 @@ impl Terrain {
                     step_height(sample.elevation * sample.biome.height_scale()) * 0.5 + 0.3
                 };
                 data.biomes[i] = sample.biome;
+            }
+        }
+        if let Some(chunk_edits) = self.edits.get(&coord) {
+            for (&(lx, lz), &h) in chunk_edits {
+                let lx = lx as usize;
+                let lz = lz as usize;
+                if lx < CHUNK_VERTS && lz < CHUNK_VERTS {
+                    data.heights[ChunkData::idx(lx, lz)] = h;
+                }
             }
         }
         self.chunks.insert(coord, data);
@@ -178,6 +195,14 @@ impl Terrain {
             return false;
         }
         chunk.heights[idx] = new_h;
+
+        // Record the edit so it survives chunk unload + game save. Re-edits
+        // overwrite the same key, so the map is bounded by the number of
+        // *distinct* vertices touched, not by brush ticks.
+        self.edits
+            .entry((cx, cz))
+            .or_default()
+            .insert((lx as u8, lz as u8), new_h);
 
         for (dx, dz) in [(0, 0), (-1, 0), (1, 0), (0, -1), (0, 1)] {
             let cell_world_x = wx + dx;

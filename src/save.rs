@@ -11,6 +11,7 @@ use crate::items::ItemRegistry;
 use crate::memory::{CellMemory, Journal, JournalEntry, WorldMemory};
 use crate::player::Player;
 use crate::world::chunks::ChunkManager;
+use crate::world::terrain::Terrain;
 
 pub struct SavePlugin;
 
@@ -88,6 +89,25 @@ struct SaveData {
     journal: Vec<JournalEntry>,
     #[serde(default)]
     journal_next_id: u32,
+    /// Phase 1 / W1.15: per-chunk vertex height edits relative to PCG.
+    /// Stored as a flat list because JSON map keys must be strings, and
+    /// IVec2-shaped keys would need a custom serializer.
+    #[serde(default)]
+    terrain_edits: Vec<ChunkEditsSave>,
+}
+
+#[derive(Serialize, Deserialize)]
+struct ChunkEditsSave {
+    cx: i32,
+    cz: i32,
+    edits: Vec<VertexEditSave>,
+}
+
+#[derive(Serialize, Deserialize)]
+struct VertexEditSave {
+    lx: u8,
+    lz: u8,
+    h: f32,
 }
 
 fn default_seed() -> u32 {
@@ -125,6 +145,7 @@ fn auto_save(
     world_memory: Res<WorldMemory>,
     journal: Res<Journal>,
     chunks: Res<ChunkManager>,
+    terrain: Res<Terrain>,
     player_query: Query<&Transform, With<Player>>,
     buildings: Query<(&PlacedBuilding, &Transform)>,
     action_state: Res<leafwing_input_manager::prelude::ActionState<crate::input::Action>>,
@@ -172,6 +193,20 @@ fn auto_save(
         })
         .collect();
 
+    let terrain_edits: Vec<ChunkEditsSave> = terrain
+        .edits
+        .iter()
+        .filter(|(_, vmap)| !vmap.is_empty())
+        .map(|(coord, vmap)| ChunkEditsSave {
+            cx: coord.0,
+            cz: coord.1,
+            edits: vmap
+                .iter()
+                .map(|(&(lx, lz), &h)| VertexEditSave { lx, lz, h })
+                .collect(),
+        })
+        .collect();
+
     let data = SaveData {
         player: [
             player_tf.translation.x,
@@ -184,6 +219,7 @@ fn auto_save(
         world_memory: world_memory_vec,
         journal: journal.entries.clone(),
         journal_next_id: journal.next_id,
+        terrain_edits,
     };
 
     let path = save_path();
@@ -211,6 +247,7 @@ fn load_game(
     registry: Res<ItemRegistry>,
     asset_server: Res<AssetServer>,
     mut chunks: ResMut<ChunkManager>,
+    mut terrain: ResMut<Terrain>,
     mut inventory: ResMut<Inventory>,
     mut world_memory: ResMut<WorldMemory>,
     mut journal: ResMut<Journal>,
@@ -245,6 +282,22 @@ fn load_game(
     }
     journal.entries = save.journal;
     journal.next_id = save.journal_next_id;
+
+    // Terrain edits restore. The chunks themselves haven't loaded yet
+    // (Startup runs before Update), so this just primes the overlay; each
+    // chunk picks up its edits when `Terrain::generate_chunk` runs in
+    // `load_nearby_chunks`.
+    for chunk_save in save.terrain_edits {
+        let mut vmap: HashMap<(u8, u8), f32> = HashMap::new();
+        for v in chunk_save.edits {
+            vmap.insert((v.lx, v.lz), v.h);
+        }
+        if !vmap.is_empty() {
+            terrain
+                .edits
+                .insert((chunk_save.cx, chunk_save.cz), vmap);
+        }
+    }
 
     for (key, count) in save.inventory {
         if count == 0 {
