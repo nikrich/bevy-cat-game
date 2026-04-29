@@ -24,15 +24,23 @@ impl Plugin for WorldPlugin {
             .add_systems(
                 Update,
                 (
+                    // Chunk lifecycle is strictly sequential. `water::spawn_chunk_water`
+                    // and `props::spawn_chunk_props` consume `ChunkLoaded` events
+                    // *and* parent themselves to the chunk entity that
+                    // `load_nearby_chunks` just queued, so they have to run
+                    // after the spawn commands are queued — otherwise props'
+                    // `add_child(chunk_entity, …)` can apply before the
+                    // chunk-entity spawn command does, hitting an "entity
+                    // not yet spawned" panic.
                     (
                         chunks::track_player_chunk,
                         chunks::load_nearby_chunks,
                         chunks::unload_distant_chunks,
                         terrain::regenerate_dirty_chunks,
+                        water::spawn_chunk_water,
+                        props::spawn_chunk_props,
                     )
                         .chain(),
-                    water::spawn_chunk_water,
-                    props::spawn_chunk_props,
                     props::sway_props_near_player,
                     props::apply_prop_sway,
                     daynight::advance_time,

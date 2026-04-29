@@ -89,6 +89,7 @@ pub fn register(app: &mut App) {
             switch_brush,
             adjust_radius,
             apply_brush,
+            apply_footprint_flatten,
             draw_brush_preview,
         ),
     );
@@ -249,6 +250,30 @@ fn apply_brush(
             }
         }
     }
+}
+
+/// W1.11 debug hotkey: pressing `F` while edit mode is active stamps a
+/// 4×4 footprint flatten under the cursor with a 2-tile smoothstep skirt.
+/// Phase 2's building-placement system will call `Terrain::flatten_rect`
+/// itself; this debug binding just exercises the API.
+fn apply_footprint_flatten(
+    keys: Res<ButtonInput<KeyCode>>,
+    cursor: Res<CursorState>,
+    noise: Res<WorldNoise>,
+    edit_mode: Res<EditMode>,
+    mut terrain: ResMut<Terrain>,
+) {
+    if !edit_mode.active || !keys.just_pressed(KeyCode::KeyF) {
+        return;
+    }
+    let Some(world_pos) = cursor.cursor_world else {
+        return;
+    };
+    let cx = world_pos.x.round() as i32;
+    let cz = world_pos.z.round() as i32;
+    // 4×4 footprint centred on the cursor (cells [cx-2..cx+1] × [cz-2..cz+1]),
+    // 2-tile smoothstep skirt — matches the spec's W1.11 example.
+    terrain.flatten_rect(cx - 2, cz - 2, cx + 1, cz + 1, 2, &noise);
 }
 
 fn draw_brush_preview(

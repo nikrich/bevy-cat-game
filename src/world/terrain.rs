@@ -215,6 +215,74 @@ impl Terrain {
         }
         true
     }
+
+    /// Flatten the rectangular footprint `[min_x..=max_x] × [min_z..=max_z]`
+    /// to the median ground height inside it, then blend a smoothstep skirt
+    /// outward by `skirt_width` tiles so the edit eases into the surrounding
+    /// terrain (W1.11). Returns the number of vertices changed.
+    ///
+    /// Phase 2's building-placement system will call this whenever a floor
+    /// or platform piece is placed; Phase 1 exposes the API and a debug
+    /// hotkey so the visual can be checked in isolation.
+    pub fn flatten_rect(
+        &mut self,
+        min_x: i32,
+        min_z: i32,
+        max_x: i32,
+        max_z: i32,
+        skirt_width: i32,
+        noise: &WorldNoise,
+    ) -> usize {
+        let mut samples = Vec::with_capacity(((max_x - min_x + 1) * (max_z - min_z + 1)) as usize);
+        for vz in min_z..=max_z {
+            for vx in min_x..=max_x {
+                samples.push(self.height_at_or_sample(vx as f32, vz as f32, noise));
+            }
+        }
+        if samples.is_empty() {
+            return 0;
+        }
+        samples.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+        let target = step_height(samples[samples.len() / 2]);
+
+        let mut count = 0;
+        // Inside the footprint: every vertex snaps to target.
+        for vz in min_z..=max_z {
+            for vx in min_x..=max_x {
+                if self.set_vertex_height(vx, vz, target) {
+                    count += 1;
+                }
+            }
+        }
+        // Skirt: outside the footprint but within `skirt_width`. Blend
+        // smoothstep between the footprint edge (full target) and the
+        // outer skirt boundary (untouched). Chebyshev distance keeps the
+        // skirt rectangular, matching the footprint shape.
+        if skirt_width > 0 {
+            for vz in (min_z - skirt_width)..=(max_z + skirt_width) {
+                for vx in (min_x - skirt_width)..=(max_x + skirt_width) {
+                    if vx >= min_x && vx <= max_x && vz >= min_z && vz <= max_z {
+                        continue;
+                    }
+                    let dx_out = (min_x - vx).max(vx - max_x).max(0);
+                    let dz_out = (min_z - vz).max(vz - max_z).max(0);
+                    let d = dx_out.max(dz_out);
+                    if d == 0 || d > skirt_width {
+                        continue;
+                    }
+                    let t = d as f32 / skirt_width as f32;
+                    let smoothed = t * t * (3.0 - 2.0 * t);
+                    let blend = 1.0 - smoothed;
+                    let original = self.height_at_or_sample(vx as f32, vz as f32, noise);
+                    let new_h = step_height(original + (target - original) * blend);
+                    if self.set_vertex_height(vx, vz, new_h) {
+                        count += 1;
+                    }
+                }
+            }
+        }
+        count
+    }
 }
 
 /// Map a world vertex coord to the chunk that owns its storage slot. Uses
