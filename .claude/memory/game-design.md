@@ -35,8 +35,9 @@ A peaceful, lifelong world-crafting game where you play as a bipedal cat explori
 14. [x] Water and terrain features (ocean, rivers, waves)
 15. [x] NPC animals (5 types, wander + flee AI)
 16. [ ] Music and ambient audio
-17. [x] UI/HUD (inventory hotbar, crafting menu, build prompt, gather prompt)
+17. [x] UI/HUD (inventory hotbar, crafting menu, build prompt, gather prompt, brush hotbar)
 18. [x] Particle effects (leaves, fireflies, snow, sand, pollen)
+19. [x] Terrain editing (Raise / Lower / Flatten / Smooth / Paint brushes, edits persist)
 
 ## Input architecture
 - Unified GameInput resource abstraction

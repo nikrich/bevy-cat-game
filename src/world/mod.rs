@@ -2,6 +2,7 @@ pub mod biome;
 pub mod chunks;
 pub mod daynight;
 pub mod edit;
+pub mod edit_egui;
 pub mod props;
 pub mod terrain;
 pub mod water;
@@ -50,6 +51,7 @@ impl Plugin for WorldPlugin {
                 ),
             );
         edit::register(app);
+        edit_egui::register(app);
     }
 }
 

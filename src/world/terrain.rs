@@ -91,16 +91,17 @@ impl ChunkData {
 /// Authoritative store for terrain vertex state. Mesh and collider are
 /// derivatives, rebuilt by [`regenerate_dirty_chunks`].
 ///
-/// `edits` is a persistent overlay that survives chunk unloads and game
-/// saves: it remembers any vertex heights set via [`Terrain::set_vertex_height`]
-/// (i.e. brush edits) so re-loading the chunk re-applies them on top of
-/// the PCG default. The keys are chunk-local indices in `0..CHUNK_CELLS`,
+/// `edits` and `biome_edits` are persistent overlays that survive chunk
+/// unloads and game saves: they remember any vertex heights and biome ids
+/// set via the brush APIs so re-loading the chunk re-applies them on top
+/// of the PCG default. The keys are chunk-local indices in `0..CHUNK_CELLS`,
 /// matching the `vertex_owner` mapping used everywhere else.
 #[derive(Resource, Default)]
 pub struct Terrain {
     pub chunks: HashMap<ChunkCoord, ChunkData>,
     pub dirty: HashSet<ChunkCoord>,
     pub edits: HashMap<ChunkCoord, HashMap<(u8, u8), f32>>,
+    pub biome_edits: HashMap<ChunkCoord, HashMap<(u8, u8), Biome>>,
 }
 
 impl Terrain {
@@ -131,6 +132,15 @@ impl Terrain {
                 let lz = lz as usize;
                 if lx < CHUNK_VERTS && lz < CHUNK_VERTS {
                     data.heights[ChunkData::idx(lx, lz)] = h;
+                }
+            }
+        }
+        if let Some(chunk_biome_edits) = self.biome_edits.get(&coord) {
+            for (&(lx, lz), &b) in chunk_biome_edits {
+                let lx = lx as usize;
+                let lz = lz as usize;
+                if lx < CHUNK_VERTS && lz < CHUNK_VERTS {
+                    data.biomes[ChunkData::idx(lx, lz)] = b;
                 }
             }
         }
@@ -213,6 +223,41 @@ impl Terrain {
                 self.dirty.insert((chunk_x, chunk_z));
             }
         }
+        true
+    }
+
+    /// Read the biome stored at world vertex `(wx, wz)`. Each integer world
+    /// coord owns one storage slot in the chunk where the vertex is the NW
+    /// corner of a cell. Returns `None` if that chunk isn't loaded.
+    pub fn vertex_biome(&self, wx: i32, wz: i32) -> Option<Biome> {
+        let (cx, cz, lx, lz) = vertex_owner(wx, wz);
+        let chunk = self.chunks.get(&(cx, cz))?;
+        Some(chunk.biomes[ChunkData::idx(lx, lz)])
+    }
+
+    /// Write a biome at world vertex `(wx, wz)` and mark the owning chunk
+    /// dirty. Unlike [`Self::set_vertex_height`], biome only feeds the cell
+    /// whose NW corner is this vertex (it doesn't affect neighbouring cell
+    /// risers), so only one chunk needs marking.
+    ///
+    /// Returns `true` if the biome changed, `false` if the chunk wasn't
+    /// loaded or the new biome matched the old.
+    pub fn set_vertex_biome(&mut self, wx: i32, wz: i32, new_biome: Biome) -> bool {
+        let (cx, cz, lx, lz) = vertex_owner(wx, wz);
+        let Some(chunk) = self.chunks.get_mut(&(cx, cz)) else {
+            return false;
+        };
+        let idx = ChunkData::idx(lx, lz);
+        if chunk.biomes[idx] == new_biome {
+            return false;
+        }
+        chunk.biomes[idx] = new_biome;
+
+        self.biome_edits
+            .entry((cx, cz))
+            .or_default()
+            .insert((lx as u8, lz as u8), new_biome);
+        self.dirty.insert((cx, cz));
         true
     }
 

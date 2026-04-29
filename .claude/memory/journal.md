@@ -1,5 +1,27 @@
 # Session Journal
 
+## 2026-04-29 -- Phase 1 continued: Smooth + Paint brushes, biome paint persistence, brush hotbar UI
+
+**What was done:**
+- W1.10 finished (Smooth + Paint). `BrushTool` enum extended with `Smooth` and `Paint`; `Hotbar4` selects Smooth, `Hotbar5` selects Paint. Smooth lerps each vertex toward the average of its 4 cardinal neighbours, snapshotting heights inside the brush bounds (+1 ring) at the start of each tick so iteration order doesn't feed half-updated values back into later neighbour reads. Paint is binary inside a >0.5-falloff gate (biome ids don't lerp); cycles through the 9 paintable biomes (Ocean excluded — painting water onto land doesn't lower the height to the wading floor and the per-chunk water plane only covers PCG-water cells). `[` / `]` cycle the paint biome while Paint is active. Gizmo ring tints: blue for Smooth, magenta for Paint
+- W1.10 biome paint persistence: `Terrain` gains a parallel `biome_edits: HashMap<ChunkCoord, HashMap<(u8,u8), Biome>>` overlay alongside the existing height edits overlay. `set_vertex_biome` records the write and marks the *single* owning chunk dirty (biomes only feed the cell whose NW corner is the vertex — they don't cross into neighbour-cell risers like heights do, so the 5-cell dirty fan-out from `set_vertex_height` is unnecessary). `generate_chunk` re-applies biome edits after PCG, mirroring the height path. Save format extends with `biome_edits: Vec<ChunkBiomeEditsSave>` (flat list because JSON map keys must be strings), `#[serde(default)]` so older saves load. `Biome` gained `Serialize, Deserialize` derives
+- W1.14 brush hotbar UI. New `src/world/edit_egui.rs` registers an egui panel anchored to bottom-centre while edit mode is active. Lists the 5 brushes with their hotkey numbers, highlights the active one in gold, displays current radius, and (when Paint is selected) the active biome name + the `[` / `]` hint. Style matches the crafting menu (parchment + gold). Hidden when edit mode is off so it doesn't fight the inventory hotbar
+
+**Deferred / not started in this session:**
+- W1.4 vertex tint atlas (one texture tile per biome on the top face) — still pending; per-cell vertex tint with shade variation already works
+- W1.12 / W1.13 `bevy_landmass` navmesh + override — still parked. Phase 5 NPC cats are when the cost-benefit flips
+- Paint-driven prop respawn — when a vertex's biome changes, the props in that cell should also update (e.g. paint Forest onto Desert and trees should appear next time the chunk regens). Right now Paint only changes the surface tint; props were placed on chunk load and stay where they are. Logged for later
+- Spec amendment to `spec/phases/02-terrain.md` W1.4 wording ("smooth blending across vertex boundaries" → "tile-aligned biome edges") still pending in the doc
+
+**Files created:** `src/world/edit_egui.rs`
+
+**Files modified:** `src/world/biome.rs` (Serialize/Deserialize on `Biome`), `src/world/terrain.rs` (`biome_edits` overlay, `set_vertex_biome`, `vertex_biome`, `generate_chunk` re-apply), `src/world/edit.rs` (Smooth + Paint brushes, `[`/`]` biome cycle, snapshotted reads for Smooth, gizmo tints), `src/world/mod.rs` (register `edit_egui`), `src/save.rs` (`biome_edits` round-trip)
+
+**Surprising things:**
+- Paint with smoothstep falloff would have produced visible dot patterns at the radius edge — biome ids are discrete, so a "70% painted" vertex looks identical to a "100% painted" one and the falloff just becomes a noisy boundary. A binary gate at falloff > 0.5 gives a clean rounded footprint
+- Smooth needs the snapshot pass not because of intra-frame ordering (the iteration is single-threaded) but because the brush is *iterative*: each tick should converge a little, and feeding a half-updated row's value into the next row's read accelerates the smear directionally rather than smoothing isotropically
+- The `set_vertex_biome` 1-chunk dirty fan-out vs `set_vertex_height`'s 5-chunk fan-out tripped me up briefly. The reason: a vertex's height feeds the cell at its NW corner (top quad) AND the four neighbour cells' risers, because risers compare against the neighbour's NW height. A vertex's biome only feeds the NW-corner cell's *colour*, since risers are coloured by their owner cell, not their neighbour. So biome edits never cross cells
+
 ## 2026-04-29 -- Phase 1 underway: vertex grid + cuboid mesh + brushes + persistence + auto-flatten
 
 **What was done:**

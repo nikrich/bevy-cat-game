@@ -10,6 +10,7 @@ use crate::inventory::{Inventory, InventoryChanged};
 use crate::items::ItemRegistry;
 use crate::memory::{CellMemory, Journal, JournalEntry, WorldMemory};
 use crate::player::Player;
+use crate::world::biome::Biome;
 use crate::world::chunks::ChunkManager;
 use crate::world::terrain::Terrain;
 
@@ -94,6 +95,10 @@ struct SaveData {
     /// IVec2-shaped keys would need a custom serializer.
     #[serde(default)]
     terrain_edits: Vec<ChunkEditsSave>,
+    /// Phase 1 / W1.10 Paint: per-chunk vertex biome overrides relative to
+    /// PCG. Same flat-list shape as `terrain_edits` for the same reason.
+    #[serde(default)]
+    biome_edits: Vec<ChunkBiomeEditsSave>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -108,6 +113,20 @@ struct VertexEditSave {
     lx: u8,
     lz: u8,
     h: f32,
+}
+
+#[derive(Serialize, Deserialize)]
+struct ChunkBiomeEditsSave {
+    cx: i32,
+    cz: i32,
+    edits: Vec<VertexBiomeEditSave>,
+}
+
+#[derive(Serialize, Deserialize)]
+struct VertexBiomeEditSave {
+    lx: u8,
+    lz: u8,
+    biome: Biome,
 }
 
 fn default_seed() -> u32 {
@@ -207,6 +226,20 @@ fn auto_save(
         })
         .collect();
 
+    let biome_edits: Vec<ChunkBiomeEditsSave> = terrain
+        .biome_edits
+        .iter()
+        .filter(|(_, vmap)| !vmap.is_empty())
+        .map(|(coord, vmap)| ChunkBiomeEditsSave {
+            cx: coord.0,
+            cz: coord.1,
+            edits: vmap
+                .iter()
+                .map(|(&(lx, lz), &biome)| VertexBiomeEditSave { lx, lz, biome })
+                .collect(),
+        })
+        .collect();
+
     let data = SaveData {
         player: [
             player_tf.translation.x,
@@ -220,6 +253,7 @@ fn auto_save(
         journal: journal.entries.clone(),
         journal_next_id: journal.next_id,
         terrain_edits,
+        biome_edits,
     };
 
     let path = save_path();
@@ -295,6 +329,17 @@ fn load_game(
         if !vmap.is_empty() {
             terrain
                 .edits
+                .insert((chunk_save.cx, chunk_save.cz), vmap);
+        }
+    }
+    for chunk_save in save.biome_edits {
+        let mut vmap: HashMap<(u8, u8), Biome> = HashMap::new();
+        for v in chunk_save.edits {
+            vmap.insert((v.lx, v.lz), v.biome);
+        }
+        if !vmap.is_empty() {
+            terrain
+                .biome_edits
                 .insert((chunk_save.cx, chunk_save.cz), vmap);
         }
     }

@@ -1,8 +1,9 @@
 use bevy::prelude::*;
 use noise::{NoiseFn, Perlin};
+use serde::{Deserialize, Serialize};
 
 /// All biome types in the world.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum Biome {
     Ocean,
     Beach,
