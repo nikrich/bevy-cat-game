@@ -5,7 +5,7 @@ use noise::NoiseFn;
 
 use super::biome::{Biome, WorldNoise};
 use super::chunks::{ChunkLoaded, CHUNK_SIZE};
-use super::terrain::step_height;
+use super::terrain::Terrain;
 
 #[derive(Component)]
 pub struct Prop;
@@ -289,6 +289,7 @@ pub fn spawn_chunk_props(
     mut commands: Commands,
     asset_server: Res<AssetServer>,
     noise: Res<WorldNoise>,
+    terrain: Res<Terrain>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
     mut chunk_events: MessageReader<ChunkLoaded>,
@@ -337,17 +338,20 @@ pub fn spawn_chunk_props(
                     continue;
                 }
 
-                let sh = step_height(sample.elevation * sample.biome.height_scale());
-                let base_y = sh * 0.5 + 0.1;
+                // Y comes from the terrain grid (already populated for this
+                // chunk by `load_nearby_chunks`). Props sit on the surface;
+                // the chunk entity is at the chunk's NW corner so X/Z are
+                // chunk-local.
+                let base_y = terrain.height_at_or_sample(wx as f32, wz as f32, &noise);
                 let variety = variety_noise.get([wx as f64 * 0.3, wz as f64 * 0.3]) as f32;
 
                 spawn_biome_prop(
                     &mut commands,
                     &asset_server,
                     event.entity,
-                    wx as f32,
+                    lx as f32,
                     base_y,
-                    wz as f32,
+                    lz as f32,
                     sample.biome,
                     variety,
                     &assets,

@@ -9,7 +9,7 @@ use crate::inventory::{Inventory, InventoryChanged};
 use crate::items::{ItemId, ItemRegistry, ItemTags};
 use crate::player::Player;
 use crate::world::biome::WorldNoise;
-use crate::world::terrain::step_height;
+use crate::world::terrain::Terrain;
 
 pub struct BuildingPlugin;
 
@@ -284,6 +284,7 @@ fn update_preview(
     placed_q: Query<(&Transform, &PlacedBuilding), Without<BuildPreview>>,
     mut previews: Query<&mut Transform, With<BuildPreview>>,
     noise: Res<WorldNoise>,
+    terrain: Res<Terrain>,
     player_query: Query<&GlobalTransform, With<Player>>,
 ) {
     let Some(mode) = &build_mode else { return };
@@ -323,11 +324,10 @@ fn update_preview(
         ),
     };
 
-    let sample = noise.sample(grid_x as f64, grid_z as f64);
-    let sh = step_height(sample.elevation * sample.biome.height_scale());
-    // The terrain tile is a 1.0 x 0.6 x 1.0 cuboid centred on `sh * 0.5`, so its
-    // top sits at `sh * 0.5 + 0.3`.
-    let tile_top = sh * 0.5 + 0.3;
+    // Terrain surface Y from the vertex grid (Phase 1). The grid stores the
+    // visible top of the old per-tile cuboid (sh*0.5 + 0.3), so existing
+    // stack-on-top math against `tile_top` carries over unchanged.
+    let tile_top = terrain.height_at_or_sample(grid_x, grid_z, &noise);
 
     // Stack on top of any existing buildings at this grid cell so walls can
     // sit on floors, roofs on walls, etc. We take the highest top in the cell.

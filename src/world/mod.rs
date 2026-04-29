@@ -14,15 +14,23 @@ impl Plugin for WorldPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<chunks::ChunkManager>()
             .init_resource::<biome::WorldNoise>()
+            .init_resource::<terrain::Terrain>()
+            .init_resource::<terrain::TerrainMaterial>()
+            .init_resource::<water::WaterAssets>()
             .init_resource::<daynight::WorldTime>()
             .add_message::<chunks::ChunkLoaded>()
             .add_systems(Startup, spawn_light)
             .add_systems(
                 Update,
                 (
-                    chunks::track_player_chunk,
-                    chunks::load_nearby_chunks,
-                    chunks::unload_distant_chunks,
+                    (
+                        chunks::track_player_chunk,
+                        chunks::load_nearby_chunks,
+                        chunks::unload_distant_chunks,
+                        terrain::regenerate_dirty_chunks,
+                    )
+                        .chain(),
+                    water::spawn_chunk_water,
                     props::spawn_chunk_props,
                     props::sway_props_near_player,
                     props::apply_prop_sway,
@@ -30,8 +38,6 @@ impl Plugin for WorldPlugin {
                     daynight::update_sun,
                     daynight::update_sky_color,
                     daynight::update_ambient_light,
-                    water::init_water_ripples,
-                    water::update_water_ripples,
                 ),
             );
     }

@@ -111,6 +111,22 @@
 - **Decision**: `WorldTime.speed` drops from 2.0 to 1.0 (1 real minute = 1 in-game hour). Phase boundaries (dawn 5-7, morning 7-9, day 9-16, dusk 16-18, twilight 18-20, night 20-5) unchanged
 - **Consequences**: Players see ~one full cycle per ~24-minute session instead of two. Transitions feel less hectic; a full day arc maps to a typical "evening of play". DEC-006 retired
 
+## DEC-017: Vertex-height grid replaces per-tile cuboids (supersedes DEC-003 elevation rendering)
+- **Date**: 2026-04-29
+- **Status**: Accepted
+- **Context**: Phase 1 deliverable. Per-tile cuboid terrain (DEC-004) couldn't host the brushes, auto-flatten, navmesh, and slope blending the spec calls for without retrofitting them onto a model that fights every operation. Vertex grids are the canonical shape for editable terrain
+- **Decision**: Each chunk owns a 33×33 height array (32 cells = 33 verts, with the last row/column shared with the neighbour chunk). Per-vertex biome IDs ride alongside heights. The PCG samples `WorldNoise` per vertex with the existing `step_height` quantization, so the chunky low-poly look is preserved while the underlying representation is now a continuous height field. `Terrain::height_at(x, z)` returns the surface Y for a given world position, replacing the `step_height(noise.sample(...).elevation * height_scale()) * 0.5 + 0.3` formula scattered across props/animals/building
+- **Alternatives**: Voxel grid (good for caves, overkill for top-down). Hand-painted heightmaps (breaks PCG promise). Keep cuboids and bolt brushes onto entity transforms (would multiply DEBT-007 by every brush)
+- **Consequences**: Tile entities are gone. `Tile`/`WaterTile` components removed; `tile_tint` warm-cell visual parked under DEBT-018 because the per-Tile material-clone trick no longer applies. Closes DEBT-007 and DEBT-008 (terrain side)
+
+## DEC-018: One stepped-block mesh + trimesh collider per chunk (supersedes DEC-004 entity model)
+- **Date**: 2026-04-29
+- **Status**: Accepted
+- **Context**: DEC-004 spawned 256 entities per chunk. With Phase 1's vertex grid in hand the cheaper option is one mesh per chunk. The first attempt used a smooth-grid mesh (verts shared between cells) plus a rapier heightfield collider — visually that turned the chunky stepped-tile aesthetic into rolling hills, which the user explicitly rejected on first playtest. The vertex grid is the right *data* model for brushes/save/navmesh; the *render* model needs to keep the cuboid look
+- **Decision**: Each chunk renders as a stepped-block mesh — one flat top quad per cell at the cell's NW-corner vertex height, plus a vertical riser quad on each side where the neighbour cell is shorter (taller cell owns the riser). Verts are duplicated per quad so each tile reads as one solid block. Per-cell biome tint with a small position-derived shade variation, no smooth blending across cell boundaries. Collider is a rapier `Collider::trimesh` built from the same vertex/index buffers, so the cat physically walks on the same risers it sees. The trimesh + `RigidBody::Fixed` live on the chunk entity itself; mesh and collider are rebuilt by `regenerate_dirty_chunks`, capped at 4 dirty chunks per frame, with `try_insert` swallowing the unload-race. Chunk size grew from 16 to 32 cells; render distance dropped from 3 to 2 to keep loaded area roughly comparable
+- **Alternatives**: Heightfield collider with smooth-grid mesh (the wrong aesthetic). Per-cell triangle colliders (collider count explosion). Keep per-tile entities and bolt a separate ground mesh on top (doubles the work). Smooth grid + post-process shader to fake step risers (more complex, fights the lighting). Hard-stepped tops without riser geometry (tiles would float with sky visible through the gaps)
+- **Consequences**: ~2k–8k tris per chunk depending on terrain variation (vs 256 entities). Trimesh is heavier than heightfield but the geometry-physics match is exact — no visual/collision mismatch when the cat steps up risers. Vertex count per chunk roughly 3–4× the smooth-grid version because of the per-quad duplication, still tiny vs the old per-tile entity cost. W1.4's "smooth biome blending" acceptance criterion needs to be amended to "tile-aligned biome edges" in the spec. W1.3 (slope shader) becomes simpler: tops are always 0°, risers always 90°, no smoothstep blend zone needed
+
 ## DEC-009: Temperature/moisture biome classification
 - **Date**: 2026-04-29
 - **Status**: Accepted

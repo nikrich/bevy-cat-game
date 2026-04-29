@@ -68,7 +68,7 @@
 - **Why**: Simpler to implement, enables per-tile interaction (DEC-004)
 - **Fix when**: If profiling shows entity count is the bottleneck (likely at render distance > 4)
 - **Effort**: L
-- **Status**: Open
+- **Status**: Resolved (2026-04-29) -- Phase 1 foundation slice (DEC-017 / DEC-018) replaced per-tile cuboids with one triangle mesh + one heightfield collider per chunk. Chunk size went 16 -> 32 cells, render distance 3 -> 2
 
 ## DEBT-008: Material/mesh duplication per chunk
 - **Added**: 2026-04-29
@@ -78,7 +78,7 @@
 - **Why**: Quick implementation path
 - **Fix when**: When optimizing memory/GPU usage
 - **Effort**: M
-- **Status**: Partially resolved -- props now use PropAssets struct with shared handles. Terrain still duplicates per chunk.
+- **Status**: Resolved (2026-04-29) -- Phase 1 foundation slice. Terrain now shares one `TerrainMaterial` resource across every chunk (per-vertex colors carry biome tint). Water shares one `WaterAssets` resource (one mesh + one material). Props were already on shared `PropAssets`
 
 ## DEBT-009: Fragile JSON save format
 - **Added**: 2026-04-29
@@ -156,6 +156,26 @@
 - **Area**: player, world/terrain, world/props
 - **What**: Originally tracked the deferral of W0.3 (`bevy_rapier3d`) and W0.4 (`bevy_tnua`); both shipped in a follow-up session the same day
 - **Status**: Resolved (2026-04-29) -- rapier 0.33 + tnua 0.31 + tnua-rapier3d 0.16 wired up. Per-tile cuboid colliders on terrain (intentionally throwaway, Phase 1 swaps for the vertex-height trimesh). Capsule rigid body + LockedAxes::ROTATION_LOCKED + TnuaController on the player. `TnuaBuiltinJump` action bound to `Action::Jump` with height=1.6 (clears one beach step + a stump). `snap_to_terrain` removed; gravity + the float spring drive Y. `pose_player` still scales the visual capsule for the verb cues. Wading depth tuned (`floor_y = step_height(SEA_LEVEL) * 0.5 - 1.05`) so the cat half-submerges in water mesh. Hand-rolled `push_player_out_of_walls` retired in favour of rapier-resolved wall colliders attached in `building::collision::attach_for_form`. Known follow-ups: tall trees act as climb-blocking walls (the float spring's cling_distance is intentionally short to avoid floating); water-tile collider race exposed by physics-driven chunk churn — `init_water_ripples` now uses `try_insert` to swallow despawn-races. The Quit button hard-exits via `std::process::exit(0)` because Bevy 0.18 + rapier + egui deadlock on `AppExit` shutdown — see DEBT-017
+
+## DEBT-018: Warm-cell tile tint disabled by terrain rewrite
+- **Added**: 2026-04-29
+- **Severity**: Low
+- **Area**: memory/tile_tint
+- **What**: The Phase C "warm tile glow" visual is parked. The original `tile_tint` system queried `Tile` entities and cloned their `StandardMaterial` so it could fade an emissive amber tint while a cell was warm. Phase 1 (DEC-017 / DEC-018) replaced per-tile entities with one mesh per chunk, so the per-cell material trick no longer applies. `WorldMemory.warmth` itself still ticks (track_player_cell + decay_warmth) so verbs/journal/save are unaffected — only the visible glow is missing
+- **Why**: Reimplementing the visual on the new mesh needs either a per-vertex emissive attribute mutated on warm-cell change (and a regen on every change) or a small overlay decal/light spawned per warm cell. Neither belongs in the Phase 1 foundation slice
+- **Fix when**: Phase 1 follow-up after the slope shader (W1.3) lands — the same custom material extension is the natural home for an emissive overlay. Or, if warmth-as-glow turns out to be rare, spawn a small unlit decal/quad at the warm cell instead of touching the chunk material
+- **Effort**: M
+- **Status**: Open
+
+## DEBT-019: Per-tile water swell parked by water-mesh-per-chunk migration
+- **Added**: 2026-04-29
+- **Severity**: Low
+- **Area**: world/water
+- **What**: The previous water "wave" visual was a per-tile Y modulation in `update_water_ripples`. With Phase 1's water-mesh-per-chunk (W1.6) the water is one flat plane per chunk, so the per-tile bobbing doesn't apply. The plane sits at sea level with no animation
+- **Why**: Re-implementing the swell on a single mesh requires either per-frame mesh-vertex mutation (allocates) or a real water shader (significant work). Both belong in a later Phase 1 slice or Phase 7 polish
+- **Fix when**: When a phase needs the "alive water" feel back, or as part of Phase 7 visual polish. Cheapest route is a custom material that displaces verts in the vertex stage from the same `wave_height` function
+- **Effort**: M
+- **Status**: Open
 
 ## DEBT-013: Phase 0 pending crate adoptions — superseded
 - **Added**: 2026-04-29

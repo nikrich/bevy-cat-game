@@ -4,7 +4,7 @@ use rand::prelude::*;
 use crate::player::Player;
 use crate::world::biome::{Biome, WorldNoise};
 use crate::world::chunks::{ChunkLoaded, CHUNK_SIZE};
-use crate::world::terrain::step_height;
+use crate::world::terrain::Terrain;
 
 pub struct AnimalPlugin;
 
@@ -85,6 +85,7 @@ fn spawn_animals(
     mut materials: ResMut<Assets<StandardMaterial>>,
     mut chunk_events: MessageReader<ChunkLoaded>,
     noise: Res<WorldNoise>,
+    terrain: Res<Terrain>,
 ) {
     let mut rng = rand::thread_rng();
 
@@ -107,8 +108,8 @@ fn spawn_animals(
                 continue;
             };
 
-            let sh = step_height(sample.elevation * sample.biome.height_scale());
-            let y = sh * 0.5 + 0.2;
+            // Animal cuboid bottom rests on the terrain surface.
+            let y = terrain.height_at_or_sample(wx as f32, wz as f32, &noise) + kind.size().y;
 
             let mesh = meshes.add(Mesh::from(Cuboid::new(
                 kind.size().x * 2.0,
@@ -144,6 +145,7 @@ fn spawn_animals(
 fn wander_animals(
     mut animals: Query<(&mut Animal, &mut Transform), Without<Fleeing>>,
     noise: Res<WorldNoise>,
+    terrain: Res<Terrain>,
     time: Res<Time>,
 ) {
     let dt = time.delta_secs();
@@ -164,12 +166,12 @@ fn wander_animals(
         transform.translation += animal.wander_dir * move_speed * dt;
 
         // Snap to terrain
-        let sample = noise.sample(
-            transform.translation.x as f64,
-            transform.translation.z as f64,
+        let surface = terrain.height_at_or_sample(
+            transform.translation.x,
+            transform.translation.z,
+            &noise,
         );
-        let sh = step_height(sample.elevation * sample.biome.height_scale());
-        transform.translation.y = sh * 0.5 + 0.2;
+        transform.translation.y = surface + animal.kind.size().y;
 
         // Face movement direction
         if animal.wander_dir.length_squared() > 0.01 {
@@ -184,6 +186,7 @@ fn flee_from_player(
     player_query: Query<&GlobalTransform, With<Player>>,
     mut animals: Query<(Entity, &Animal, &GlobalTransform, &mut Transform, Option<&mut Fleeing>)>,
     noise: Res<WorldNoise>,
+    terrain: Res<Terrain>,
     time: Res<Time>,
 ) {
     let Ok(player_gt) = player_query.single() else { return };
@@ -204,12 +207,12 @@ fn flee_from_player(
                 transform.translation += flee_dir * animal.speed * dt;
 
                 // Snap to terrain
-                let sample = noise.sample(
-                    transform.translation.x as f64,
-                    transform.translation.z as f64,
+                let surface = terrain.height_at_or_sample(
+                    transform.translation.x,
+                    transform.translation.z,
+                    &noise,
                 );
-                let sh = step_height(sample.elevation * sample.biome.height_scale());
-                transform.translation.y = sh * 0.5 + 0.2;
+                transform.translation.y = surface + animal.kind.size().y;
 
                 let angle = flee_dir.x.atan2(flee_dir.z);
                 transform.rotation = Quat::from_rotation_y(angle);
