@@ -140,12 +140,19 @@
 - **Effort**: M (custom shader skybox) or S (spec amendment)
 - **Status**: Open
 
-## DEBT-013: Phase 0 pending crate adoptions (W0.3, W0.4, W0.5, W0.6, W0.9, W0.11)
+## DEBT-016: Player movement physics (W0.3 rapier + W0.4 tnua) deferred
 - **Added**: 2026-04-29
-- **Severity**: High
-- **Area**: core
-- **What**: Six of the 14 work items in Phase 0 ship infrastructure crates that each touch many files: `bevy_rapier3d` (W0.3), `bevy_tnua` (W0.4), `leafwing-input-manager` (W0.5), `bevy_egui` (W0.6), `bevy_asset_loader` (W0.9), and `moonshine-save` (W0.11). They were not landed in the Bevy 0.18 upgrade session because each warrants its own focused integration pass with playtesting
-- **Why**: Bundling them into the same session as the engine bump risked subtle regressions in player movement, input, UI, and save -- areas the user actively plays. The eight smaller items (W0.1, W0.2, W0.7, W0.8, W0.10, W0.12, W0.13, W0.14) shipped together because they are mostly mechanical and verifiable in one pass
-- **Fix when**: Before any Phase 1+ work begins -- Phase 0 is a hard prerequisite for the rest of the spec. Recommended sequence: W0.5 (leafwing) → W0.3 + W0.4 (rapier + tnua paired) → W0.9 + W0.6 (asset_loader and egui together for the loading screen) → W0.11 (moonshine-save)
-- **Effort**: L per item; ~3-4 focused sessions total
+- **Severity**: Medium
+- **Area**: player, world/terrain, world/props
+- **What**: W0.3 (`bevy_rapier3d`) and W0.4 (`bevy_tnua`) were intentionally deferred to a focused session. Together they replace the current Transform-driven `move_player` + `snap_to_terrain` with a physics-driven character controller. Half-shipping is worse than no-shipping: rapier alone makes the player a dynamic body but without a character controller it falls through everything not yet wired with colliders, and the spec acceptance for W0.3 explicitly requires "player falls under gravity onto terrain, can walk on it without clipping" -- which forces W0.4 in the same pass
+- **Why**: The integration touches more than just `player::move_player`. Side effects to handle: (a) per-tile `Collider::cuboid` on every terrain tile (cheap but multiplies entity component counts); (b) per-prop colliders so the climb-on-top behaviour from `PropCollision` keeps working under physics (currently a distance-radius check, would become a rapier capsule/cylinder); (c) tnua step-up height tuned to the terrain's 0.25-step quantisation so the cat doesn't snag on tile seams; (d) `snap_to_terrain` removed and `pose_player` re-validated against physics-driven Y. None of these is hard alone -- the risk is the *interaction*, which only shows up under playtest
+- **Fix when**: Next focused session before Phase 1. Recommended order: rapier plugin + terrain colliders → player rigid body (verify gravity drops cat onto terrain) → tnua controller + leafwing wiring → prop colliders → remove snap_to_terrain. Phase 1 then re-does terrain colliders against the new vertex-height grid, so the per-tile cuboid form here is intentionally throwaway
+- **Effort**: M-L (one focused session)
 - **Status**: Open
+
+## DEBT-013: Phase 0 pending crate adoptions — superseded
+- **Added**: 2026-04-29
+- **Severity**: -
+- **Area**: -
+- **What**: Originally tracked all six pending crate adoptions. Most landed this session: leafwing (W0.5), egui (W0.6), asset_loader (W0.9). Atmosphere (W0.7) is its own DEBT-014. moonshine-save (W0.11) is its own DEBT-015. Rapier + tnua (W0.3 + W0.4) is its own DEBT-016
+- **Status**: Resolved (2026-04-29) — split into per-area debts; nothing left under this catch-all
