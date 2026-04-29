@@ -122,21 +122,22 @@ fn spawn_animals(
                 ..default()
             });
 
-            let animal = commands
-                .spawn((
-                    Animal {
-                        kind,
-                        wander_timer: rng.gen_range(0.0..3.0f32),
-                        wander_dir: Vec3::ZERO,
-                        speed: kind.speed(),
-                    },
-                    Mesh3d(mesh),
-                    MeshMaterial3d(mat),
-                    Transform::from_xyz(wx as f32, y, wz as f32),
-                ))
-                .id();
-
-            commands.entity(event.entity).add_child(animal);
+            // Animals are spawned as top-level entities rather than chunk
+            // children: they already carry absolute world Transforms, and
+            // making them children of a chunk that may despawn before this
+            // command applies (load-save race) panicked add_child at apply
+            // time. They simply outlive their original chunk.
+            commands.spawn((
+                Animal {
+                    kind,
+                    wander_timer: rng.gen_range(0.0..3.0f32),
+                    wander_dir: Vec3::ZERO,
+                    speed: kind.speed(),
+                },
+                Mesh3d(mesh),
+                MeshMaterial3d(mat),
+                Transform::from_xyz(wx as f32, y, wz as f32),
+            ));
         }
     }
 }

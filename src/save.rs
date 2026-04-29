@@ -7,6 +7,7 @@ use std::path::PathBuf;
 use crate::building::{spawn_placed_building, PlacedBuilding};
 use crate::inventory::{Inventory, InventoryChanged};
 use crate::items::ItemRegistry;
+use crate::memory::{CellMemory, Journal, JournalEntry, WorldMemory};
 use crate::player::Player;
 
 pub struct SavePlugin;
@@ -47,6 +48,14 @@ struct SaveData {
     /// Keys are item save_keys (e.g. "plank.oak", "log.pine").
     inventory: HashMap<String, u32>,
     buildings: Vec<BuildingSave>,
+    /// Phase A substrate. Optional with `#[serde(default)]` so saves predating
+    /// Phase A still load cleanly.
+    #[serde(default)]
+    world_memory: Vec<CellMemoryEntry>,
+    #[serde(default)]
+    journal: Vec<JournalEntry>,
+    #[serde(default)]
+    journal_next_id: u32,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -57,6 +66,16 @@ struct BuildingSave {
     y: f32,
     z: f32,
     rot: f32,
+}
+
+/// Flat row encoding for a single `WorldMemory` cell. We avoid serialising
+/// `HashMap<IVec2, _>` directly because IVec2 isn't a string-shaped JSON key.
+#[derive(Serialize, Deserialize)]
+struct CellMemoryEntry {
+    x: i32,
+    z: i32,
+    #[serde(flatten)]
+    cell: CellMemory,
 }
 
 #[derive(Resource)]
@@ -101,6 +120,8 @@ fn auto_save(
     time: Res<Time>,
     inventory: Res<Inventory>,
     registry: Res<ItemRegistry>,
+    world_memory: Res<WorldMemory>,
+    journal: Res<Journal>,
     player_query: Query<&Transform, With<Player>>,
     buildings: Query<(&PlacedBuilding, &Transform)>,
     input: Res<crate::input::GameInput>,
@@ -138,6 +159,16 @@ fn auto_save(
         })
         .collect();
 
+    let world_memory_vec: Vec<CellMemoryEntry> = world_memory
+        .cells
+        .iter()
+        .map(|(coord, cell)| CellMemoryEntry {
+            x: coord.x,
+            z: coord.y,
+            cell: cell.clone(),
+        })
+        .collect();
+
     let data = SaveData {
         player: [
             player_tf.translation.x,
@@ -146,6 +177,9 @@ fn auto_save(
         ],
         inventory: inv_map,
         buildings: buildings_vec,
+        world_memory: world_memory_vec,
+        journal: journal.entries.clone(),
+        journal_next_id: journal.next_id,
     };
 
     match serde_json::to_string_pretty(&data) {
@@ -165,6 +199,8 @@ fn load_game(
     registry: Res<ItemRegistry>,
     asset_server: Res<AssetServer>,
     mut inventory: ResMut<Inventory>,
+    mut world_memory: ResMut<WorldMemory>,
+    mut journal: ResMut<Journal>,
     mut inv_events: EventWriter<InventoryChanged>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
@@ -186,6 +222,15 @@ fn load_game(
     };
 
     commands.insert_resource(LoadedPlayerPos(Vec3::from(save.player)));
+
+    // Phase A substrate restore.
+    for entry in save.world_memory {
+        world_memory
+            .cells
+            .insert(IVec2::new(entry.x, entry.z), entry.cell);
+    }
+    journal.entries = save.journal;
+    journal.next_id = save.journal_next_id;
 
     for (raw_key, count) in save.inventory {
         if count == 0 {

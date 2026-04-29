@@ -1,5 +1,7 @@
 use bevy::prelude::*;
 
+pub mod collision;
+
 use crate::input::GameInput;
 use crate::inventory::{Inventory, InventoryChanged};
 use crate::items::{ItemId, ItemRegistry, ItemTags};
@@ -15,6 +17,7 @@ impl Plugin for BuildingPlugin {
         app.add_event::<PlaceEvent>()
             .init_resource::<PlaceableItems>()
             .init_resource::<PickupHold>()
+            .init_resource::<PlaceDrag>()
             .add_systems(
                 Startup,
                 init_placeable_items.after(crate::items::registry::seed_default_items),
@@ -30,6 +33,7 @@ impl Plugin for BuildingPlugin {
                     pickup_held_building,
                 ),
             );
+        collision::register(app);
     }
 }
 
@@ -45,6 +49,40 @@ pub struct PickupHold {
     pub target: Option<Entity>,
     pub started_at: f32,
 }
+
+/// Tracks an active click-and-drag placement. While the left mouse is held
+/// after a valid world-click in build mode, the placement system stamps the
+/// selected item at every fresh tile (or edge cell) the cursor sweeps over.
+///
+/// After the second placement of a drag, the system locks placement to
+/// whichever XZ axis the cursor moved along. Subsequent placements are
+/// projected onto that axis so a slightly diagonal hand-drag still produces
+/// a clean row. If the cursor strays >`AXIS_BREAK_THRESHOLD` tiles off-axis
+/// the lock breaks and the drag re-anchors at the current position.
+#[derive(Resource, Default)]
+pub struct PlaceDrag {
+    pub active: bool,
+    /// Anchor for axis projection. Encoded as (x*100, z*100) i32 to give a
+    /// stable key for half-grid edge-snap items (walls / doors / windows).
+    pub start_grid: Option<(i32, i32)>,
+    /// Last grid coord we placed at -- used to skip duplicate placements
+    /// while the cursor lingers on one tile.
+    pub last_grid: Option<(i32, i32)>,
+    pub axis: DragAxis,
+}
+
+#[derive(Default, Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DragAxis {
+    #[default]
+    Unknown,
+    X,
+    Z,
+}
+
+/// Cursor distance off-axis (in tiles) at which the lock breaks and the
+/// drag re-anchors. Roomy enough to ignore hand wobble, tight enough that
+/// an intentional turn gets through.
+const AXIS_BREAK_THRESHOLD: f32 = 1.5;
 
 const PICKUP_HOLD_SECS: f32 = 0.5;
 const PICKUP_RADIUS: f32 = 0.55;
@@ -226,6 +264,7 @@ fn select_build_item(
 
 fn update_preview(
     input: Res<GameInput>,
+    drag: Res<PlaceDrag>,
     build_mode: Option<Res<BuildMode>>,
     placeables: Res<PlaceableItems>,
     registry: Res<ItemRegistry>,
@@ -242,7 +281,7 @@ fn update_preview(
 
     let noise = WorldNoise::new(chunk_manager.seed);
 
-    let place_pos = if let Some(cursor) = input.cursor_world {
+    let mut place_pos = if let Some(cursor) = input.cursor_world {
         cursor
     } else if let Ok(player_gt) = player_query.single() {
         let pos = player_gt.translation();
@@ -251,6 +290,18 @@ fn update_preview(
     } else {
         return;
     };
+
+    // Project onto the locked drag axis so the preview tracks the locked row
+    // rather than wherever the cursor wobbled to.
+    if let Some(start) = drag.start_grid {
+        let start_x = start.0 as f32 / 100.0;
+        let start_z = start.1 as f32 / 100.0;
+        match drag.axis {
+            DragAxis::X => place_pos.z = start_z,
+            DragAxis::Z => place_pos.x = start_x,
+            DragAxis::Unknown => {}
+        }
+    }
 
     // Snap to either tile centres or half-grid (edges) depending on the form.
     let (grid_x, grid_z) = match form.snap_mode() {
@@ -291,7 +342,10 @@ fn update_preview(
 
 fn place_building(
     mut commands: Commands,
+    mouse: Res<ButtonInput<MouseButton>>,
     input: Res<GameInput>,
+    crafting: Res<crate::crafting::CraftingState>,
+    mut drag: ResMut<PlaceDrag>,
     build_mode: Option<Res<BuildMode>>,
     placeables: Res<PlaceableItems>,
     registry: Res<ItemRegistry>,
@@ -304,13 +358,30 @@ fn place_building(
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
 ) {
-    let Some(mode) = &build_mode else { return };
-    if !input.place {
+    // No build mode -> end any drag and bail.
+    let Some(mode) = &build_mode else {
+        reset_drag(&mut drag);
+        return;
+    };
+
+    // Mouse-held + Space-tap both feed placement. Mouse-held is the drag
+    // path; Space is one-shot via `input.place`.
+    let mouse_held = mouse.pressed(MouseButton::Left);
+    let space_tapped = input.place && !input.mouse_left_just_pressed;
+
+    if !mouse_held && !space_tapped {
+        reset_drag(&mut drag);
         return;
     }
 
-    // Suppress placement when the cursor is hovering an existing building --
-    // that click is reserved for the hold-to-pickup flow.
+    // Pause the drag (don't end it) while the cursor is over UI or a menu.
+    if input.pointer_over_ui || crafting.open {
+        return;
+    }
+
+    // Cursor over an existing building -> the click is reserved for the
+    // hold-to-pickup flow. Don't end the drag; if the player slides off the
+    // building onto empty terrain, dragging resumes.
     if let Some(cursor) = input.cursor_world {
         for (tf, _) in &placed_q {
             let dx = tf.translation.x - cursor.x;
@@ -321,6 +392,13 @@ fn place_building(
         }
     }
 
+    // Need a fresh world-click signal to *start* the drag so clicking on UI
+    // and sliding onto the map doesn't auto-place. Once active, the held
+    // mouse (or Space tap) is enough.
+    if !drag.active && !input.place {
+        return;
+    }
+
     let Some(item) = placeables.0.get(mode.selected).copied() else { return };
     if inventory.count(item) == 0 {
         return;
@@ -328,6 +406,63 @@ fn place_building(
 
     let Ok(preview_tf) = previews.single() else { return };
     let place_pos = preview_tf.translation;
+    let grid_key = (
+        (place_pos.x * 100.0).round() as i32,
+        (place_pos.z * 100.0).round() as i32,
+    );
+
+    // Compute the *raw* cursor grid before projection, so we can decide a
+    // lock axis or detect off-axis straying. preview_tf is already projected
+    // when axis is set, so grid_key may equal the projected coord; raw_grid
+    // tells us where the cursor actually is.
+    let raw_grid = if let Some(cursor) = input.cursor_world {
+        let snap = registry.get(placeables.0[mode.selected]).map(|d| d.form.snap_mode());
+        let (rx, rz) = match snap {
+            Some(crate::items::SnapMode::Edge) => (
+                (cursor.x * 2.0).round() / 2.0,
+                (cursor.z * 2.0).round() / 2.0,
+            ),
+            _ => (cursor.x.round(), cursor.z.round()),
+        };
+        ((rx * 100.0).round() as i32, (rz * 100.0).round() as i32)
+    } else {
+        grid_key
+    };
+
+    // Break the lock if the cursor has strayed > AXIS_BREAK_THRESHOLD tiles
+    // off the locked axis -- the player is intentionally turning. Re-anchor
+    // at the cursor's current position so the next placement sets a new
+    // axis.
+    if let Some(start) = drag.start_grid {
+        let off_tiles = match drag.axis {
+            DragAxis::X => ((raw_grid.1 - start.1) as f32 / 100.0).abs(),
+            DragAxis::Z => ((raw_grid.0 - start.0) as f32 / 100.0).abs(),
+            DragAxis::Unknown => 0.0,
+        };
+        if off_tiles > AXIS_BREAK_THRESHOLD {
+            drag.start_grid = Some(raw_grid);
+            drag.last_grid = None;
+            drag.axis = DragAxis::Unknown;
+            return; // Re-run next frame with the new anchor.
+        }
+    }
+
+    // Already placed at this grid this drag -> skip until the cursor moves.
+    if drag.last_grid == Some(grid_key) {
+        return;
+    }
+
+    // Set the lock axis on the second placement, based on which way the
+    // cursor moved from the start.
+    if drag.axis == DragAxis::Unknown {
+        if let Some(start) = drag.start_grid {
+            let dx = (raw_grid.0 - start.0).abs();
+            let dz = (raw_grid.1 - start.1).abs();
+            if dx > 0 || dz > 0 {
+                drag.axis = if dx >= dz { DragAxis::X } else { DragAxis::Z };
+            }
+        }
+    }
 
     let entry = inventory.items.entry(item).or_insert(0);
     *entry = entry.saturating_sub(1);
@@ -351,12 +486,24 @@ fn place_building(
         Transform::from_translation(place_pos).with_rotation(Quat::from_rotation_y(mode.rotation)),
     );
 
+    drag.active = true;
+    drag.last_grid = Some(grid_key);
+    drag.start_grid.get_or_insert(grid_key);
+
     if inventory.count(item) == 0 {
         if let Some(preview) = mode.preview_entity {
             commands.entity(preview).despawn();
         }
         commands.remove_resource::<BuildMode>();
+        reset_drag(&mut drag);
     }
+}
+
+fn reset_drag(drag: &mut PlaceDrag) {
+    drag.active = false;
+    drag.start_grid = None;
+    drag.last_grid = None;
+    drag.axis = DragAxis::Unknown;
 }
 
 /// Right-click or Esc clears placing mode. Used so the cursor goes back to
@@ -481,17 +628,18 @@ pub fn spawn_placed_building(
     let scaled = transform.with_scale(transform.scale * Vec3::splat(scale));
 
     if let Some(path) = def.form.scene_path() {
-        commands.spawn((
+        let mut e = commands.spawn((
             PlacedBuilding { item },
             SceneRoot(asset_server.load(path)),
             scaled,
         ));
+        collision::attach_for_form(&mut e, def.form, &transform);
         return;
     }
 
     let mesh = def.form.make_mesh();
     let color = def.material.base_color();
-    commands.spawn((
+    let mut e = commands.spawn((
         PlacedBuilding { item },
         Mesh3d(meshes.add(mesh)),
         MeshMaterial3d(materials.add(StandardMaterial {
@@ -501,4 +649,5 @@ pub fn spawn_placed_building(
         })),
         scaled,
     ));
+    collision::attach_for_form(&mut e, def.form, &transform);
 }

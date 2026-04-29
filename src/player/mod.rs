@@ -1,6 +1,7 @@
 use bevy::prelude::*;
 use crate::crafting::CraftingState;
 use crate::input::GameInput;
+use crate::memory::verbs::CatVerbState;
 use crate::save::LoadedPlayerPos;
 use crate::world::biome::{WorldNoise, SEA_LEVEL};
 use crate::world::chunks::ChunkManager;
@@ -12,7 +13,10 @@ pub struct PlayerPlugin;
 impl Plugin for PlayerPlugin {
     fn build(&self, app: &mut App) {
         app.add_systems(Startup, spawn_player)
-            .add_systems(Update, (move_player, snap_to_terrain, apply_loaded_position));
+            .add_systems(
+                Update,
+                (move_player, snap_to_terrain, apply_loaded_position, pose_player),
+            );
     }
 }
 
@@ -20,6 +24,10 @@ impl Plugin for PlayerPlugin {
 pub struct Player;
 
 const PLAYER_SPEED: f32 = 5.0;
+/// Stalking multiplier on PLAYER_SPEED while Shift is held. Tuned slow enough
+/// that animal-AI flee triggers (Phase D) can read "the cat is creeping" from
+/// velocity alone.
+const STALK_SPEED_MULT: f32 = 0.4;
 
 fn spawn_player(
     mut commands: Commands,
@@ -40,7 +48,7 @@ fn spawn_player(
     ));
 }
 
-fn move_player(
+pub fn move_player(
     input: Res<GameInput>,
     time: Res<Time>,
     mut query: Query<&mut Transform, With<Player>>,
@@ -56,7 +64,12 @@ fn move_player(
     let dir = input.movement;
     if dir.length_squared() > 0.0 {
         let direction = Vec3::new(dir.x, 0.0, -dir.y);
-        transform.translation += direction * PLAYER_SPEED * time.delta_secs();
+        let speed = if input.stalk_held {
+            PLAYER_SPEED * STALK_SPEED_MULT
+        } else {
+            PLAYER_SPEED
+        };
+        transform.translation += direction * speed * time.delta_secs();
 
         // Face movement direction (unless in build mode where we might want to face cursor)
         if build_mode.is_none() {
@@ -128,6 +141,40 @@ fn snap_to_terrain(
     let smoothing = (8.0 * time.delta_secs()).min(1.0);
     transform.translation.y =
         transform.translation.y + (target_y - transform.translation.y) * smoothing;
+
+    Ok(())
+}
+
+/// Visible feedback for the verb-holds: while pressing Z (nap) the cat scales
+/// down toward a curl; while pressing C (mark) it stretches up; while holding
+/// Shift (stalk) it sinks to a crouch. Eases back when buttons release. Pure
+/// visual; reads `CatVerbState` for hold progress so the cat actually moves
+/// through the action rather than snapping at the end.
+fn pose_player(
+    input: Res<GameInput>,
+    verbs: Res<CatVerbState>,
+    time: Res<Time>,
+    mut query: Query<&mut Transform, With<Player>>,
+) -> Result {
+    let mut transform = query.single_mut()?;
+
+    let nap_amt = verbs.nap_fraction();
+    let mark_amt = verbs.mark_fraction();
+    let stalking = if input.stalk_held { 1.0 } else { 0.0 };
+
+    // Stack: at rest, scale = (1, 1, 1). Nap shrinks Y toward 0.55 (curl).
+    // Mark stretches Y toward 1.15 (alert posture). Stalk shrinks Y toward
+    // 0.75 and widens X/Z slightly (crouch).
+    let target_y = 1.0 - 0.45 * nap_amt - 0.25 * stalking + 0.15 * mark_amt;
+    let target_xz = 1.0 + 0.10 * stalking + 0.08 * nap_amt;
+
+    let lerp = (8.0 * time.delta_secs()).min(1.0);
+    let s = transform.scale;
+    transform.scale = Vec3::new(
+        s.x + (target_xz - s.x) * lerp,
+        s.y + (target_y - s.y) * lerp,
+        s.z + (target_xz - s.z) * lerp,
+    );
 
     Ok(())
 }

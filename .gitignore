@@ -1,3 +1,4 @@
 savegame.json
+savegame.backup.json
 .claude/scheduled_tasks.lock
 target/

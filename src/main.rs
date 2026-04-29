@@ -6,6 +6,7 @@ mod gathering;
 mod input;
 mod inventory;
 mod items;
+mod memory;
 mod particles;
 mod player;
 mod save;
@@ -28,6 +29,7 @@ fn main() {
         .add_plugins((
             input::InputPlugin,
             items::ItemsPlugin,
+            memory::MemoryPlugin,
             world::WorldPlugin,
             player::PlayerPlugin,
             camera::CameraPlugin,

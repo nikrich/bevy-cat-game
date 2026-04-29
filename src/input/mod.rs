@@ -49,6 +49,16 @@ pub struct GameInput {
     /// Build slot selection (1-5), None if not pressed
     pub build_select: Option<usize>,
 
+    // Phase B cat verbs.
+    /// Z held: cat curls up to nap (banked after a hold-window).
+    pub nap_held: bool,
+    /// X tapped: cat examines the nearest notable thing.
+    pub examine: bool,
+    /// Shift held: cat moves at stalking speed (lower stance, slower).
+    pub stalk_held: bool,
+    /// C held: cat marks this cell as their own (idempotent, banked after a hold).
+    pub mark_held: bool,
+
     /// World position under mouse cursor (for placement)
     pub cursor_world: Option<Vec3>,
 
@@ -109,6 +119,13 @@ fn read_keyboard_mouse(
     input.place = keyboard.just_pressed(KeyCode::Space);
     input.rotate = keyboard.just_pressed(KeyCode::KeyR);
     input.save = keyboard.just_pressed(KeyCode::F5);
+
+    // Cat verbs (Phase B).
+    input.nap_held = keyboard.pressed(KeyCode::KeyZ);
+    input.examine = keyboard.just_pressed(KeyCode::KeyX);
+    input.stalk_held =
+        keyboard.pressed(KeyCode::ShiftLeft) || keyboard.pressed(KeyCode::ShiftRight);
+    input.mark_held = keyboard.pressed(KeyCode::KeyC);
 
     // Menu navigation (W/S when in menus)
     input.menu_up = keyboard.just_pressed(KeyCode::KeyW) || keyboard.just_pressed(KeyCode::ArrowUp);

@@ -108,8 +108,8 @@ fn pos_hash(x: f32, z: f32) -> u32 {
 /// rather than a large multiplier; rocks/boulders still use Kenney sizing.
 fn prop_scene_transform(kind: &PropKind) -> (f32, f32) {
     match kind {
-        PropKind::Tree => (1.0, 0.0),
-        PropKind::PineTree => (1.1, 0.0),
+        PropKind::Tree => (0.6, 0.0),
+        PropKind::PineTree => (0.7, 0.0),
         PropKind::Rock => (0.9, 0.05),
         PropKind::Boulder => (1.1, 0.05),
         PropKind::Mushroom => (1.4, 0.05),
