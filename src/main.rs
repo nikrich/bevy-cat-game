@@ -1,5 +1,14 @@
+mod animals;
+mod building;
 mod camera;
+mod crafting;
+mod gathering;
+mod input;
+mod inventory;
+mod particles;
 mod player;
+mod save;
+mod ui;
 mod world;
 
 use bevy::prelude::*;
@@ -16,9 +25,18 @@ fn main() {
         }))
         .insert_resource(ClearColor(Color::srgb(0.54, 0.70, 0.52)))
         .add_plugins((
+            input::InputPlugin,
             world::WorldPlugin,
             player::PlayerPlugin,
             camera::CameraPlugin,
+            inventory::InventoryPlugin,
+            gathering::GatheringPlugin,
+            crafting::CraftingPlugin,
+            building::BuildingPlugin,
+            animals::AnimalPlugin,
+            particles::ParticlePlugin,
+            save::SavePlugin,
+            ui::GameUiPlugin,
         ))
         .run();
 }

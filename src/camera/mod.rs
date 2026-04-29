@@ -12,7 +12,7 @@ impl Plugin for CameraPlugin {
 }
 
 #[derive(Component)]
-struct GameCamera;
+pub struct GameCamera;
 
 const CAMERA_HEIGHT: f32 = 18.0;
 const CAMERA_DISTANCE: f32 = 18.0;
