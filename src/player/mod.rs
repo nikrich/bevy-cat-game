@@ -4,6 +4,7 @@ use crate::input::GameInput;
 use crate::save::LoadedPlayerPos;
 use crate::world::biome::WorldNoise;
 use crate::world::chunks::ChunkManager;
+use crate::world::props::PropCollision;
 use crate::world::terrain::step_height;
 
 pub struct PlayerPlugin;
@@ -81,6 +82,7 @@ fn move_player(
 fn snap_to_terrain(
     mut query: Query<&mut Transform, With<Player>>,
     chunk_manager: Res<ChunkManager>,
+    props: Query<(&GlobalTransform, &PropCollision)>,
     time: Res<Time>,
 ) -> Result {
     let mut transform = query.single_mut()?;
@@ -91,10 +93,33 @@ fn snap_to_terrain(
         transform.translation.z as f64,
     );
     let sh = step_height(sample.elevation * sample.biome.height_scale());
-    let target_y = sh * 0.5 + 0.5;
+    // Tile is a 1.0x0.6x1.0 cuboid centred on `sh * 0.5`, so its top sits at
+    // `sh * 0.5 + 0.3`. Capsule3d::new(0.3, 0.8) extends 0.7 below its centre,
+    // so we need centre = tile_top + 0.7 = sh*0.5 + 1.0 to plant the cat's
+    // feet on the surface instead of burying it in the dirt.
+    let mut target_y = sh * 0.5 + 1.0;
+
+    // Climb onto any nearby prop with a PropCollision -- pick the highest top
+    // within reach so stacked / overlapping props don't fight each other.
+    let p = transform.translation;
+    for (gt, col) in &props {
+        let pos = gt.translation();
+        let dx = pos.x - p.x;
+        let dz = pos.z - p.z;
+        let dist_sq = dx * dx + dz * dz;
+        if dist_sq < col.radius * col.radius {
+            // Capsule3d::new(0.3, 0.8) extends 0.7 below its centre, so put the
+            // centre 0.7 above the prop top to plant the cat's feet on top.
+            let stand_y = col.top_y + 0.7;
+            if stand_y > target_y {
+                target_y = stand_y;
+            }
+        }
+    }
 
     let smoothing = (8.0 * time.delta_secs()).min(1.0);
-    transform.translation.y = transform.translation.y + (target_y - transform.translation.y) * smoothing;
+    transform.translation.y =
+        transform.translation.y + (target_y - transform.translation.y) * smoothing;
 
     Ok(())
 }

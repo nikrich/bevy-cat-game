@@ -5,6 +5,7 @@ pub mod props;
 pub mod terrain;
 pub mod water;
 
+use bevy::pbr::CascadeShadowConfigBuilder;
 use bevy::prelude::*;
 
 pub struct WorldPlugin;
@@ -43,6 +44,17 @@ fn spawn_light(mut commands: Commands) {
             color: Color::srgb(1.0, 0.95, 0.85),
             ..default()
         },
+        // Cascade shadow map only to cap how far shadows project (so dusk-angle
+        // tree shadows don't streak across the whole biome). Bias values stay at
+        // Bevy defaults to avoid peter-panning.
+        CascadeShadowConfigBuilder {
+            num_cascades: 3,
+            minimum_distance: 0.1,
+            first_cascade_far_bound: 12.0,
+            maximum_distance: 60.0,
+            overlap_proportion: 0.2,
+        }
+        .build(),
         Transform::from_rotation(Quat::from_euler(
             EulerRot::XYZ,
             -std::f32::consts::FRAC_PI_4,

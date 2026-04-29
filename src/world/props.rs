@@ -16,6 +16,15 @@ pub struct PropSway {
     pub tilt_z: f32,
 }
 
+/// Soft "climb-on-top" collision: when the player's XZ position is within
+/// `radius` of this prop, snap their Y to the prop's `top_y`. Smooth-lerped in
+/// `snap_to_terrain` so the cat eases up onto rocks/boulders.
+#[derive(Component, Clone, Copy)]
+pub struct PropCollision {
+    pub top_y: f32,
+    pub radius: f32,
+}
+
 #[derive(Component)]
 pub enum PropKind {
     Tree,
@@ -34,6 +43,95 @@ pub enum PropKind {
 const SWAY_RADIUS: f32 = 1.5;
 const SWAY_STRENGTH: f32 = 0.8;
 const SWAY_RECOVERY: f32 = 4.0;
+
+/// glTF scene for a prop kind. When `Some`, the prop spawns as a `SceneRoot`
+/// (Kenney model); otherwise the procedural spawn_* function builds it from
+/// primitives. PropSway still works because it mutates the parent transform's
+/// rotation, which the SceneRoot inherits.
+fn prop_scene_path(kind: &PropKind) -> Option<&'static str> {
+    match kind {
+        PropKind::Tree => Some("models/kenney_survival/tree.glb#Scene0"),
+        PropKind::PineTree => Some("models/kenney_survival/tree-tall.glb#Scene0"),
+        PropKind::Rock => Some("models/kenney_survival/rock-a.glb#Scene0"),
+        PropKind::Boulder => Some("models/kenney_survival/rock-flat.glb#Scene0"),
+        PropKind::Mushroom => Some("models/kenney_food/mushroom.glb#Scene0"),
+        PropKind::Bush => Some("models/kenney_survival/grass-large.glb#Scene0"),
+        PropKind::TundraGrass => Some("models/kenney_survival/grass.glb#Scene0"),
+        PropKind::Cactus
+        | PropKind::Flower
+        | PropKind::DeadBush
+        | PropKind::IceRock => None,
+    }
+}
+
+/// Per-kind scale and Y lift to make Kenney models sit on top of the terrain.
+/// Origins are typically at the model centre, so a lift keeps the visible
+/// mesh above the tile surface.
+fn prop_scene_transform(kind: &PropKind) -> (f32, f32) {
+    match kind {
+        PropKind::Tree => (2.2, 0.0),
+        PropKind::PineTree => (2.4, 0.0),
+        PropKind::Rock => (1.6, 0.25),
+        PropKind::Boulder => (2.0, 0.30),
+        PropKind::Mushroom => (1.4, 0.05),
+        PropKind::Bush => (1.3, 0.05),
+        PropKind::TundraGrass => (1.2, 0.05),
+        _ => (1.0, 0.0),
+    }
+}
+
+/// Climb-on-top collision (player snaps Y to top of this prop when nearby).
+/// Returns (height_above_origin_unscaled, radius_xz_unscaled). `None` for
+/// props that should be pass-through visually (trees, ground cover, etc.).
+///
+/// Heights are tuned so `top_y` matches the visible top of the Kenney mesh
+/// after the model's own scale is applied -- so the cat rests on the rock,
+/// not floating above it.
+fn prop_climb(kind: &PropKind) -> Option<(f32, f32)> {
+    match kind {
+        PropKind::Rock => Some((0.15, 0.30)),
+        PropKind::Boulder => Some((0.30, 0.45)),
+        PropKind::Mushroom => Some((0.20, 0.22)),
+        _ => None,
+    }
+}
+
+/// Spawn a Kenney glTF prop attached to a chunk. Returns true if a scene was
+/// spawned (caller should skip the procedural path).
+fn try_spawn_kenney_prop(
+    commands: &mut Commands,
+    chunk: Entity,
+    asset_server: &AssetServer,
+    kind: PropKind,
+    x: f32,
+    y: f32,
+    z: f32,
+) -> bool {
+    let Some(path) = prop_scene_path(&kind) else {
+        return false;
+    };
+    let (scale, lift) = prop_scene_transform(&kind);
+    let climb = prop_climb(&kind);
+    let prop_y = y + lift;
+
+    let mut entity = commands.spawn((
+        Prop,
+        PropSway::default(),
+        kind,
+        SceneRoot(asset_server.load(path)),
+        Transform::from_xyz(x, prop_y, z).with_scale(Vec3::splat(scale)),
+        Visibility::default(),
+    ));
+    if let Some((height, radius)) = climb {
+        entity.insert(PropCollision {
+            top_y: prop_y + height * scale,
+            radius: radius * scale,
+        });
+    }
+    let prop = entity.id();
+    commands.entity(chunk).add_child(prop);
+    true
+}
 
 /// Shared mesh/material handles for all prop types.
 struct PropAssets {
@@ -131,6 +229,7 @@ impl PropAssets {
 
 pub fn spawn_chunk_props(
     mut commands: Commands,
+    asset_server: Res<AssetServer>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
     mut chunk_events: EventReader<ChunkLoaded>,
@@ -186,6 +285,7 @@ pub fn spawn_chunk_props(
 
                 spawn_biome_prop(
                     &mut commands,
+                    &asset_server,
                     event.entity,
                     wx as f32,
                     base_y,
@@ -201,6 +301,7 @@ pub fn spawn_chunk_props(
 
 fn spawn_biome_prop(
     commands: &mut Commands,
+    asset_server: &AssetServer,
     chunk: Entity,
     x: f32,
     y: f32,
@@ -209,77 +310,67 @@ fn spawn_biome_prop(
     variety: f32,
     assets: &PropAssets,
 ) {
-    match biome {
+    // Pick the prop kind for this (biome, variety) cell. Decoupled from spawning
+    // so we can route through Kenney scenes when available without duplicating
+    // the per-biome decision tree.
+    let kind = match biome {
         Biome::Grassland => {
-            if variety > 0.3 {
-                spawn_tree(commands, chunk, x, y, z, assets, false);
-            } else if variety > 0.0 {
-                spawn_bush(commands, chunk, x, y + 0.02, z, assets);
-            } else if variety > -0.3 {
-                spawn_flower(commands, chunk, x, y, z, assets, variety);
-            } else {
-                spawn_mushroom(commands, chunk, x, y, z, assets);
-            }
+            if variety > 0.3 { PropKind::Tree }
+            else if variety > 0.0 { PropKind::Bush }
+            else if variety > -0.3 { PropKind::Flower }
+            else { PropKind::Mushroom }
         }
         Biome::Forest => {
-            if variety > -0.2 {
-                spawn_tree(commands, chunk, x, y, z, assets, false);
-            } else if variety > -0.5 {
-                spawn_bush(commands, chunk, x, y + 0.02, z, assets);
-            } else {
-                spawn_mushroom(commands, chunk, x, y, z, assets);
-            }
+            if variety > -0.2 { PropKind::Tree }
+            else if variety > -0.5 { PropKind::Bush }
+            else { PropKind::Mushroom }
         }
         Biome::Meadow => {
-            if variety > 0.4 {
-                spawn_tree(commands, chunk, x, y, z, assets, false);
-            } else if variety > -0.2 {
-                spawn_flower(commands, chunk, x, y, z, assets, variety);
-            } else {
-                spawn_bush(commands, chunk, x, y + 0.02, z, assets);
-            }
+            if variety > 0.4 { PropKind::Tree }
+            else if variety > -0.2 { PropKind::Flower }
+            else { PropKind::Bush }
         }
         Biome::Taiga => {
-            if variety > -0.3 {
-                spawn_pine(commands, chunk, x, y, z, assets, variety);
-            } else {
-                spawn_simple(commands, chunk, x, y + 0.08, z, &assets.rock, &assets.dark_rock_mat, PropKind::Rock);
-            }
+            if variety > -0.3 { PropKind::PineTree } else { PropKind::Rock }
         }
         Biome::Desert => {
-            if variety > 0.2 {
-                spawn_cactus(commands, chunk, x, y, z, assets);
-            } else if variety > -0.2 {
-                spawn_simple(commands, chunk, x, y + 0.08, z, &assets.rock, &assets.rock_mat, PropKind::Rock);
-            } else {
-                spawn_dead_bush(commands, chunk, x, y + 0.05, z, assets);
-            }
+            if variety > 0.2 { PropKind::Cactus }
+            else if variety > -0.2 { PropKind::Rock }
+            else { PropKind::DeadBush }
         }
-        Biome::Beach => {
-            spawn_simple(commands, chunk, x, y + 0.08, z, &assets.rock, &assets.rock_mat, PropKind::Rock);
-        }
+        Biome::Beach => PropKind::Rock,
         Biome::Tundra => {
-            if variety > 0.2 {
-                spawn_simple_sway(commands, chunk, x, y + 0.05, z, &assets.tundra_grass, &assets.tundra_grass_mat, PropKind::TundraGrass);
-            } else {
-                spawn_simple(commands, chunk, x, y + 0.08, z, &assets.rock, &assets.dark_rock_mat, PropKind::Rock);
-            }
+            if variety > 0.2 { PropKind::TundraGrass } else { PropKind::Rock }
         }
         Biome::Mountain => {
-            if variety > 0.0 {
-                spawn_simple(commands, chunk, x, y + 0.1, z, &assets.boulder, &assets.dark_rock_mat, PropKind::Boulder);
-            } else {
-                spawn_simple(commands, chunk, x, y + 0.08, z, &assets.rock, &assets.rock_mat, PropKind::Rock);
-            }
+            if variety > 0.0 { PropKind::Boulder } else { PropKind::Rock }
         }
         Biome::Snow => {
-            if variety > 0.3 {
-                spawn_simple(commands, chunk, x, y + 0.1, z, &assets.ice_rock, &assets.ice_rock_mat, PropKind::IceRock);
-            } else if variety > 0.0 {
-                spawn_simple(commands, chunk, x, y + 0.08, z, &assets.rock, &assets.snow_rock_mat, PropKind::Rock);
-            }
+            if variety > 0.3 { PropKind::IceRock }
+            else if variety > 0.0 { PropKind::Rock }
+            else { return }
         }
-        Biome::Ocean => {}
+        Biome::Ocean => return,
+    };
+
+    // Kenney glTF first; fall back to procedural primitives for the rest.
+    match kind {
+        PropKind::Tree
+        | PropKind::PineTree
+        | PropKind::Rock
+        | PropKind::Boulder
+        | PropKind::Mushroom
+        | PropKind::Bush
+        | PropKind::TundraGrass => {
+            try_spawn_kenney_prop(commands, chunk, asset_server, kind, x, y, z);
+        }
+        PropKind::Cactus => spawn_cactus(commands, chunk, x, y, z, assets),
+        PropKind::Flower => spawn_flower(commands, chunk, x, y, z, assets, variety),
+        PropKind::DeadBush => spawn_dead_bush(commands, chunk, x, y + 0.05, z, assets),
+        PropKind::IceRock => spawn_simple(
+            commands, chunk, x, y + 0.1, z,
+            &assets.ice_rock, &assets.ice_rock_mat, PropKind::IceRock,
+        ),
     }
 }
 
