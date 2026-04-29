@@ -3,9 +3,11 @@
 use bevy::prelude::*;
 use noise::NoiseFn;
 
+use std::collections::HashSet;
+
 use super::biome::{Biome, WorldNoise};
-use super::chunks::{ChunkLoaded, CHUNK_SIZE};
-use super::terrain::Terrain;
+use super::chunks::{Chunk, ChunkLoaded, ChunkManager, CHUNK_SIZE};
+use super::terrain::{ChunkCoord, Terrain};
 
 #[derive(Component)]
 pub struct Prop;
@@ -23,6 +25,59 @@ pub struct PropSway {
 pub struct PropCollision {
     pub top_y: f32,
     pub radius: f32,
+}
+
+/// Terrain surface Y the prop was last anchored against. Used by
+/// [`snap_props_to_terrain`] to follow Raise/Lower/Smooth/Flatten brush
+/// edits — when the chunk's mesh regenerates, the delta between
+/// `terrain_y` and the new surface height is applied to the prop's
+/// `Transform.y` (and `PropCollision.top_y`), so trees/rocks rise and
+/// fall with the ground instead of hanging in air or getting buried.
+///
+/// We store the terrain height (not the prop's Y) because each prop type
+/// adds its own visual lift on top — recording the terrain reference
+/// keeps that lift implicit in the current Transform and lets the snap
+/// system work in pure deltas.
+#[derive(Component)]
+pub struct PropTerrainAnchor {
+    pub terrain_y: f32,
+}
+
+/// Cell coordinates a prop belongs to, so the Paint brush respawn system
+/// can find and despawn props in cells whose biome just changed. `(cx, cz)`
+/// is the chunk coord; `(lx, lz)` is the chunk-local cell index in
+/// `0..CHUNK_SIZE`.
+#[derive(Component, Clone, Copy)]
+pub struct PropCell {
+    pub cx: i32,
+    pub cz: i32,
+    pub lx: u8,
+    pub lz: u8,
+}
+
+/// Pop-in animation tag for props that were spawned by the Paint brush
+/// respawn pass. Initial chunk-load props skip this so the world doesn't
+/// pop in every time you walk; only paint-driven appearances pop.
+///
+/// `base_scale` is `None` until the first tick — we snapshot the prop's
+/// current `Transform.scale` then, snap to zero, and animate back up.
+/// This way the spawner doesn't need to know the per-kind scale to set
+/// up the animation; it just inserts the marker.
+#[derive(Component)]
+pub struct PropSpawnPop {
+    pub elapsed: f32,
+    pub duration: f32,
+    pub base_scale: Option<Vec3>,
+}
+
+impl Default for PropSpawnPop {
+    fn default() -> Self {
+        Self {
+            elapsed: 0.0,
+            duration: 0.35,
+            base_scale: None,
+        }
+    }
 }
 
 #[derive(Component)]
@@ -135,8 +190,9 @@ fn prop_climb(kind: &PropKind) -> Option<(f32, f32)> {
     }
 }
 
-/// Spawn a Kenney glTF prop attached to a chunk. Returns true if a scene was
-/// spawned (caller should skip the procedural path).
+/// Spawn a Kenney glTF prop attached to a chunk. Returns the spawned
+/// prop entity, or `None` if `kind` doesn't have a scene path (caller
+/// should fall back to the procedural primitive path).
 fn try_spawn_kenney_prop(
     commands: &mut Commands,
     chunk: Entity,
@@ -145,11 +201,10 @@ fn try_spawn_kenney_prop(
     x: f32,
     y: f32,
     z: f32,
-) -> bool {
+    cell: PropCell,
+) -> Option<Entity> {
     let hash = pos_hash(x, z);
-    let Some(path) = prop_scene_path(&kind, hash) else {
-        return false;
-    };
+    let path = prop_scene_path(&kind, hash)?;
     let (scale, lift) = prop_scene_transform(&kind);
     let climb = prop_climb(&kind);
     let prop_y = y + lift;
@@ -159,6 +214,8 @@ fn try_spawn_kenney_prop(
             Prop,
             PropSway::default(),
             kind,
+            PropTerrainAnchor { terrain_y: y },
+            cell,
             SceneRoot(asset_server.load(path)),
             Transform::from_xyz(x, prop_y, z).with_scale(Vec3::splat(scale)),
             Visibility::default(),
@@ -188,11 +245,15 @@ fn try_spawn_kenney_prop(
         commands.entity(prop).add_child(collider);
     }
     commands.entity(chunk).add_child(prop);
-    true
+    Some(prop)
 }
 
-/// Shared mesh/material handles for all prop types.
-struct PropAssets {
+/// Shared mesh/material handles for all prop types. Built once at
+/// startup so prop spawn paths (initial chunk load + Paint brush
+/// respawn) reuse the same handles instead of rebuilding the table per
+/// invocation.
+#[derive(Resource)]
+pub struct PropAssets {
     // Meshes
     trunk: Handle<Mesh>,
     canopy: Handle<Mesh>,
@@ -227,28 +288,42 @@ struct PropAssets {
     snow_rock_mat: Handle<StandardMaterial>,
 }
 
-impl PropAssets {
-    fn new(
-        meshes: &mut ResMut<Assets<Mesh>>,
-        materials: &mut ResMut<Assets<StandardMaterial>>,
-    ) -> Self {
+impl FromWorld for PropAssets {
+    fn from_world(world: &mut World) -> Self {
+        let mut meshes = world.resource_mut::<Assets<Mesh>>();
+        let trunk = meshes.add(Mesh::from(Cylinder::new(0.08, 0.5)));
+        let canopy = meshes.add(Mesh::from(Cone { radius: 0.35, height: 0.7 }));
+        let pine_canopy = meshes.add(Mesh::from(Cone { radius: 0.25, height: 0.9 }));
+        let rock = meshes.add(Mesh::from(Sphere::new(0.15)));
+        let boulder = meshes.add(Mesh::from(Sphere::new(0.3)));
+        let flower_stem = meshes.add(Mesh::from(Cylinder::new(0.02, 0.2)));
+        let flower_head = meshes.add(Mesh::from(Sphere::new(0.06)));
+        let bush = meshes.add(Mesh::from(Sphere::new(0.25)));
+        let mushroom_stem = meshes.add(Mesh::from(Cylinder::new(0.03, 0.1)));
+        let mushroom_cap = meshes.add(Mesh::from(Sphere::new(0.1)));
+        let cactus_body = meshes.add(Mesh::from(Cylinder::new(0.1, 0.5)));
+        let dead_bush = meshes.add(Mesh::from(Sphere::new(0.15)));
+        let tundra_grass = meshes.add(Mesh::from(Cylinder::new(0.04, 0.15)));
+        let ice_rock = meshes.add(Mesh::from(Cuboid::new(0.2, 0.25, 0.2)));
+        drop(meshes);
+
+        let mut materials = world.resource_mut::<Assets<StandardMaterial>>();
         Self {
             // Meshes
-            trunk: meshes.add(Mesh::from(Cylinder::new(0.08, 0.5))),
-            canopy: meshes.add(Mesh::from(Cone { radius: 0.35, height: 0.7 })),
-            pine_canopy: meshes.add(Mesh::from(Cone { radius: 0.25, height: 0.9 })),
-            rock: meshes.add(Mesh::from(Sphere::new(0.15))),
-            boulder: meshes.add(Mesh::from(Sphere::new(0.3))),
-            flower_stem: meshes.add(Mesh::from(Cylinder::new(0.02, 0.2))),
-            flower_head: meshes.add(Mesh::from(Sphere::new(0.06))),
-            bush: meshes.add(Mesh::from(Sphere::new(0.25))),
-            mushroom_stem: meshes.add(Mesh::from(Cylinder::new(0.03, 0.1))),
-            mushroom_cap: meshes.add(Mesh::from(Sphere::new(0.1))),
-            cactus_body: meshes.add(Mesh::from(Cylinder::new(0.1, 0.5))),
-            dead_bush: meshes.add(Mesh::from(Sphere::new(0.15))),
-            tundra_grass: meshes.add(Mesh::from(Cylinder::new(0.04, 0.15))),
-            ice_rock: meshes.add(Mesh::from(Cuboid::new(0.2, 0.25, 0.2))),
-
+            trunk,
+            canopy,
+            pine_canopy,
+            rock,
+            boulder,
+            flower_stem,
+            flower_head,
+            bush,
+            mushroom_stem,
+            mushroom_cap,
+            cactus_body,
+            dead_bush,
+            tundra_grass,
+            ice_rock,
             // Materials
             trunk_mat: materials.add(StandardMaterial {
                 base_color: Color::srgb(0.45, 0.32, 0.20),
@@ -290,8 +365,7 @@ pub fn spawn_chunk_props(
     asset_server: Res<AssetServer>,
     noise: Res<WorldNoise>,
     terrain: Res<Terrain>,
-    mut meshes: ResMut<Assets<Mesh>>,
-    mut materials: ResMut<Assets<StandardMaterial>>,
+    assets: Res<PropAssets>,
     mut chunk_events: MessageReader<ChunkLoaded>,
 ) {
     let events: Vec<_> = chunk_events.read().collect();
@@ -301,64 +375,99 @@ pub fn spawn_chunk_props(
 
     let prop_noise = &noise.moisture; // reuse for prop placement
     let variety_noise = &noise.temperature; // reuse for variety
-    let assets = PropAssets::new(&mut meshes, &mut materials);
 
     for event in &events {
-        let world_offset_x = event.x * CHUNK_SIZE;
-        let world_offset_z = event.z * CHUNK_SIZE;
-
         for lx in 0..CHUNK_SIZE {
             for lz in 0..CHUNK_SIZE {
-                let wx = world_offset_x + lx;
-                let wz = world_offset_z + lz;
-
-                let sample = noise.sample(wx as f64, wz as f64);
-
-                // No props on water
-                if sample.biome.is_water() {
-                    continue;
-                }
-
-                // Density check -- each biome has different density
-                let density_threshold = match sample.biome {
-                    Biome::Forest => 0.35,
-                    Biome::Meadow => 0.45,
-                    Biome::Grassland => 0.55,
-                    Biome::Taiga => 0.40,
-                    Biome::Desert => 0.75,
-                    Biome::Beach => 0.85,
-                    Biome::Tundra => 0.65,
-                    Biome::Mountain => 0.70,
-                    Biome::Snow => 0.80,
-                    Biome::Ocean => 1.0,
-                };
-
-                let density = prop_noise.get([wx as f64 * 0.15, wz as f64 * 0.15]).abs() as f32;
-                if density < density_threshold {
-                    continue;
-                }
-
-                // Y comes from the terrain grid (already populated for this
-                // chunk by `load_nearby_chunks`). Props sit on the surface;
-                // the chunk entity is at the chunk's NW corner so X/Z are
-                // chunk-local.
-                let base_y = terrain.height_at_or_sample(wx as f32, wz as f32, &noise);
-                let variety = variety_noise.get([wx as f64 * 0.3, wz as f64 * 0.3]) as f32;
-
-                spawn_biome_prop(
+                let wx = event.x * CHUNK_SIZE + lx;
+                let wz = event.z * CHUNK_SIZE + lz;
+                // Read biome off the chunk's vertex grid — that's the
+                // PCG biome with `biome_edits` already re-applied from
+                // a save, so painted cells persist across reload. Fall
+                // back to PCG if the chunk somehow isn't loaded by now
+                // (it should be: we're handling its `ChunkLoaded`).
+                let biome = terrain
+                    .vertex_biome(wx, wz)
+                    .unwrap_or_else(|| noise.sample(wx as f64, wz as f64).biome);
+                try_spawn_cell_prop(
                     &mut commands,
                     &asset_server,
                     event.entity,
-                    lx as f32,
-                    base_y,
-                    lz as f32,
-                    sample.biome,
-                    variety,
+                    event.x,
+                    event.z,
+                    lx as u8,
+                    lz as u8,
+                    biome,
+                    &terrain,
+                    &noise,
                     &assets,
                 );
             }
         }
     }
+    // Silence unused-warnings on the cached aliases (kept for symmetry
+    // with how the inner helper destructures `noise`).
+    let _ = (prop_noise, variety_noise);
+}
+
+/// Spawn one prop in a cell if its (biome, density) sample passes the
+/// per-biome threshold. Shared by initial chunk-load spawn and Paint
+/// brush respawn — the only difference between the two callers is which
+/// `biome` they pass (PCG sample vs. the painted overlay).
+///
+/// Returns the spawned prop's `Entity`, or `None` when the cell either
+/// failed the density gate or holds a biome with no spawnable variant
+/// at the rolled `variety`.
+fn try_spawn_cell_prop(
+    commands: &mut Commands,
+    asset_server: &AssetServer,
+    chunk_entity: Entity,
+    cx: i32,
+    cz: i32,
+    lx: u8,
+    lz: u8,
+    biome: Biome,
+    terrain: &Terrain,
+    noise: &WorldNoise,
+    assets: &PropAssets,
+) -> Option<Entity> {
+    if biome.is_water() {
+        return None;
+    }
+    let density_threshold = match biome {
+        Biome::Forest => 0.35,
+        Biome::Meadow => 0.45,
+        Biome::Grassland => 0.55,
+        Biome::Taiga => 0.40,
+        Biome::Desert => 0.75,
+        Biome::Beach => 0.85,
+        Biome::Tundra => 0.65,
+        Biome::Mountain => 0.70,
+        Biome::Snow => 0.80,
+        Biome::Ocean => 1.0,
+    };
+    let wx = cx * CHUNK_SIZE + lx as i32;
+    let wz = cz * CHUNK_SIZE + lz as i32;
+    let density = noise.moisture.get([wx as f64 * 0.15, wz as f64 * 0.15]).abs() as f32;
+    if density < density_threshold {
+        return None;
+    }
+    // Props are children of the chunk entity, which sits at the chunk's
+    // NW corner — so we pass chunk-local x/z here, not world-space.
+    let base_y = terrain.height_at_or_sample(wx as f32, wz as f32, noise);
+    let variety = noise.temperature.get([wx as f64 * 0.3, wz as f64 * 0.3]) as f32;
+    spawn_biome_prop(
+        commands,
+        asset_server,
+        chunk_entity,
+        lx as f32,
+        base_y,
+        lz as f32,
+        biome,
+        variety,
+        assets,
+        PropCell { cx, cz, lx, lz },
+    )
 }
 
 fn spawn_biome_prop(
@@ -371,7 +480,8 @@ fn spawn_biome_prop(
     biome: Biome,
     variety: f32,
     assets: &PropAssets,
-) {
+    cell: PropCell,
+) -> Option<Entity> {
     // Pick the prop kind for this (biome, variety) cell. Decoupled from spawning
     // so we can route through Kenney scenes when available without duplicating
     // the per-biome decision tree.
@@ -410,13 +520,13 @@ fn spawn_biome_prop(
         Biome::Snow => {
             if variety > 0.3 { PropKind::IceRock }
             else if variety > 0.0 { PropKind::Rock }
-            else { return }
+            else { return None }
         }
-        Biome::Ocean => return,
+        Biome::Ocean => return None,
     };
 
     // Kenney glTF first; fall back to procedural primitives for the rest.
-    match kind {
+    Some(match kind {
         PropKind::Tree
         | PropKind::PineTree
         | PropKind::Rock
@@ -424,16 +534,15 @@ fn spawn_biome_prop(
         | PropKind::Mushroom
         | PropKind::Bush
         | PropKind::TundraGrass => {
-            try_spawn_kenney_prop(commands, chunk, asset_server, kind, x, y, z);
+            try_spawn_kenney_prop(commands, chunk, asset_server, kind, x, y, z, cell)?
         }
-        PropKind::Cactus => spawn_cactus(commands, chunk, x, y, z, assets),
-        PropKind::Flower => spawn_flower(commands, chunk, x, y, z, assets, variety),
-        PropKind::DeadBush => spawn_dead_bush(commands, chunk, x, y + 0.05, z, assets),
-        PropKind::IceRock => spawn_simple(
-            commands, chunk, x, y + 0.1, z,
-            &assets.ice_rock, &assets.ice_rock_mat, PropKind::IceRock,
-        ),
-    }
+        PropKind::Cactus => spawn_cactus(commands, chunk, x, y, z, assets, cell),
+        PropKind::Flower => spawn_flower(commands, chunk, x, y, z, assets, variety, cell),
+        // Internal lift moved into the spawner so `y` here remains the
+        // reference terrain height for `PropTerrainAnchor`.
+        PropKind::DeadBush => spawn_dead_bush(commands, chunk, x, y, z, assets, cell),
+        PropKind::IceRock => spawn_ice_rock(commands, chunk, x, y, z, assets, cell),
+    })
 }
 
 // --- Spawners ---
@@ -475,10 +584,18 @@ fn spawn_bush(commands: &mut Commands, chunk: Entity, x: f32, y: f32, z: f32, as
     commands.entity(chunk).add_child(bush);
 }
 
-fn spawn_flower(commands: &mut Commands, chunk: Entity, x: f32, y: f32, z: f32, assets: &PropAssets, variety: f32) {
+fn spawn_flower(commands: &mut Commands, chunk: Entity, x: f32, y: f32, z: f32, assets: &PropAssets, variety: f32, cell: PropCell) -> Entity {
     let color_idx = ((variety.abs() * 17.0) as usize) % 4;
     let flower = commands
-        .spawn((Prop, PropSway::default(), PropKind::Flower, Transform::from_xyz(x, y, z), Visibility::default()))
+        .spawn((
+            Prop,
+            PropSway::default(),
+            PropKind::Flower,
+            PropTerrainAnchor { terrain_y: y },
+            cell,
+            Transform::from_xyz(x, y, z),
+            Visibility::default(),
+        ))
         .id();
     let stem = commands
         .spawn((Mesh3d(assets.flower_stem.clone()), MeshMaterial3d(assets.stem_mat.clone()), Transform::from_xyz(0.0, 0.1, 0.0)))
@@ -488,6 +605,7 @@ fn spawn_flower(commands: &mut Commands, chunk: Entity, x: f32, y: f32, z: f32, 
         .id();
     commands.entity(flower).add_children(&[stem, head]);
     commands.entity(chunk).add_child(flower);
+    flower
 }
 
 fn spawn_mushroom(commands: &mut Commands, chunk: Entity, x: f32, y: f32, z: f32, assets: &PropAssets) {
@@ -504,18 +622,54 @@ fn spawn_mushroom(commands: &mut Commands, chunk: Entity, x: f32, y: f32, z: f32
     commands.entity(chunk).add_child(mushroom);
 }
 
-fn spawn_cactus(commands: &mut Commands, chunk: Entity, x: f32, y: f32, z: f32, assets: &PropAssets) {
+fn spawn_cactus(commands: &mut Commands, chunk: Entity, x: f32, y: f32, z: f32, assets: &PropAssets, cell: PropCell) -> Entity {
     let cactus = commands
-        .spawn((Prop, PropSway::default(), PropKind::Cactus, Mesh3d(assets.cactus_body.clone()), MeshMaterial3d(assets.cactus_mat.clone()), Transform::from_xyz(x, y + 0.25, z)))
+        .spawn((
+            Prop,
+            PropSway::default(),
+            PropKind::Cactus,
+            PropTerrainAnchor { terrain_y: y },
+            cell,
+            Mesh3d(assets.cactus_body.clone()),
+            MeshMaterial3d(assets.cactus_mat.clone()),
+            Transform::from_xyz(x, y + 0.25, z),
+        ))
         .id();
     commands.entity(chunk).add_child(cactus);
+    cactus
 }
 
-fn spawn_dead_bush(commands: &mut Commands, chunk: Entity, x: f32, y: f32, z: f32, assets: &PropAssets) {
+fn spawn_dead_bush(commands: &mut Commands, chunk: Entity, x: f32, y: f32, z: f32, assets: &PropAssets, cell: PropCell) -> Entity {
     let bush = commands
-        .spawn((Prop, PropSway::default(), PropKind::DeadBush, Mesh3d(assets.dead_bush.clone()), MeshMaterial3d(assets.dead_bush_mat.clone()), Transform::from_xyz(x, y, z)))
+        .spawn((
+            Prop,
+            PropSway::default(),
+            PropKind::DeadBush,
+            PropTerrainAnchor { terrain_y: y },
+            cell,
+            Mesh3d(assets.dead_bush.clone()),
+            MeshMaterial3d(assets.dead_bush_mat.clone()),
+            Transform::from_xyz(x, y + 0.05, z),
+        ))
         .id();
     commands.entity(chunk).add_child(bush);
+    bush
+}
+
+fn spawn_ice_rock(commands: &mut Commands, chunk: Entity, x: f32, y: f32, z: f32, assets: &PropAssets, cell: PropCell) -> Entity {
+    let prop = commands
+        .spawn((
+            Prop,
+            PropKind::IceRock,
+            PropTerrainAnchor { terrain_y: y },
+            cell,
+            Mesh3d(assets.ice_rock.clone()),
+            MeshMaterial3d(assets.ice_rock_mat.clone()),
+            Transform::from_xyz(x, y + 0.1, z),
+        ))
+        .id();
+    commands.entity(chunk).add_child(prop);
+    prop
 }
 
 fn spawn_simple(commands: &mut Commands, chunk: Entity, x: f32, y: f32, z: f32, mesh: &Handle<Mesh>, mat: &Handle<StandardMaterial>, kind: PropKind) {
@@ -586,6 +740,184 @@ pub fn apply_prop_sway(mut props: Query<(&PropSway, &mut Transform), With<Prop>>
             transform.rotation = Quat::from_euler(EulerRot::XZY, sway.tilt_z, 0.0, -sway.tilt_x);
         } else {
             transform.rotation = Quat::IDENTITY;
+        }
+    }
+}
+
+/// Drain [`Terrain::painted_cells`] each frame: for every cell whose
+/// biome was just painted, despawn any existing props in that cell and
+/// spawn new ones for the painted biome. Density check + variety hash
+/// are deterministic per (wx, wz), so painting Forest onto Desert
+/// produces a tree at the same world position the cell would have had
+/// if it had been Forest from PCG.
+///
+/// This runs after [`super::terrain::regenerate_dirty_chunks`] so the
+/// chunk's mesh has already picked up the painted vertex colour by the
+/// time props rebuild.
+pub fn respawn_props_for_painted_cells(
+    mut commands: Commands,
+    asset_server: Res<AssetServer>,
+    noise: Res<WorldNoise>,
+    mut terrain: ResMut<Terrain>,
+    chunk_manager: Res<ChunkManager>,
+    assets: Res<PropAssets>,
+    cell_props: Query<(Entity, &PropCell)>,
+) {
+    if terrain.painted_cells.is_empty() {
+        return;
+    }
+    let painted: Vec<(ChunkCoord, HashSet<(u8, u8)>)> =
+        terrain.painted_cells.drain().collect();
+
+    for (coord, cells) in painted {
+        let Some(&chunk_entity) = chunk_manager.loaded.get(&coord) else {
+            continue;
+        };
+        // Despawn any existing props in painted cells. `commands.despawn()`
+        // is recursive in Bevy 0.18, so per-prop trunk/canopy children
+        // (and the rapier collider child on rocks) come down with the
+        // root entity.
+        let to_despawn: Vec<Entity> = cell_props
+            .iter()
+            .filter(|(_, cell)| {
+                cell.cx == coord.0
+                    && cell.cz == coord.1
+                    && cells.contains(&(cell.lx, cell.lz))
+            })
+            .map(|(e, _)| e)
+            .collect();
+        for entity in to_despawn {
+            commands.entity(entity).despawn();
+        }
+        // Spawn fresh props for the painted biome and tag each with
+        // `PropSpawnPop` so they animate in instead of appearing flatly.
+        for (lx, lz) in cells {
+            let world_x = coord.0 * CHUNK_SIZE + lx as i32;
+            let world_z = coord.1 * CHUNK_SIZE + lz as i32;
+            // Prefer the painted biome (read off the chunk's vertex grid,
+            // which already includes biome_edits); fall back to PCG if
+            // the chunk somehow isn't loaded by the time we get here.
+            let biome = terrain
+                .vertex_biome(world_x, world_z)
+                .unwrap_or_else(|| noise.sample(world_x as f64, world_z as f64).biome);
+            if let Some(prop_entity) = try_spawn_cell_prop(
+                &mut commands,
+                &asset_server,
+                chunk_entity,
+                coord.0,
+                coord.1,
+                lx,
+                lz,
+                biome,
+                &terrain,
+                &noise,
+                &assets,
+            ) {
+                commands
+                    .entity(prop_entity)
+                    .insert(PropSpawnPop::default());
+            }
+        }
+    }
+}
+
+/// Animate freshly-painted props from a near-zero scale to their
+/// natural scale with an ease-out-back overshoot. The natural scale is
+/// captured from the prop's `Transform.scale` on the first tick (snap
+/// to a tiny start scale, start the curve), so leaf spawners don't
+/// need to know about the animation — they just set their scale as
+/// usual and the respawn system tags the entity with `PropSpawnPop`.
+///
+/// The minimum scale is clamped to [`POP_SCALE_FLOOR`] (~0.1%) instead
+/// of zero. Some props (rocks/boulders/mushrooms) have a child rapier
+/// cuboid collider that inherits the parent's GlobalTransform scale —
+/// at exactly zero the collider's AABB collapses and parry's BVH
+/// builder panics with "index out of bounds" mid-physics-step. A 0.001
+/// floor is visually indistinguishable from zero at typical prop sizes
+/// but keeps the collider non-degenerate.
+const POP_SCALE_FLOOR: f32 = 0.001;
+
+pub fn animate_prop_spawn_pop(
+    mut commands: Commands,
+    mut props: Query<(Entity, &mut Transform, &mut PropSpawnPop)>,
+    time: Res<Time>,
+) {
+    let dt = time.delta_secs();
+    for (entity, mut tf, mut pop) in &mut props {
+        let base_scale = match pop.base_scale {
+            Some(s) => s,
+            None => {
+                // First tick: snapshot the spawner-set scale, snap the
+                // visible scale to the tiny floor, and skip advancing
+                // so the curve starts at the floor next frame.
+                let snapped = tf.scale;
+                pop.base_scale = Some(snapped);
+                tf.scale = snapped * POP_SCALE_FLOOR;
+                continue;
+            }
+        };
+        pop.elapsed += dt;
+        let t = (pop.elapsed / pop.duration).clamp(0.0, 1.0);
+        if t >= 1.0 {
+            tf.scale = base_scale;
+            commands.entity(entity).remove::<PropSpawnPop>();
+        } else {
+            // ease-out-back: starts at ~0, overshoots ~10% past 1,
+            // settles. Floor at POP_SCALE_FLOOR keeps the collider AABB
+            // non-degenerate.
+            let f = ease_out_back(t).max(POP_SCALE_FLOOR);
+            tf.scale = base_scale * f;
+        }
+    }
+}
+
+fn ease_out_back(t: f32) -> f32 {
+    let c1 = 1.70158_f32;
+    let c3 = c1 + 1.0;
+    let t1 = t - 1.0;
+    1.0 + c3 * t1 * t1 * t1 + c1 * t1 * t1
+}
+
+/// Re-anchor props to their cell's current terrain height after a chunk
+/// regenerates (W1.10 follow-up: Raise/Lower/Smooth/Flatten brushes).
+///
+/// Triggers off `Changed<Mesh3d>` on chunk entities — the regen system
+/// inserts a fresh `Mesh3d` whenever it rebuilds a chunk, so this query
+/// fires exactly when terrain heights may have moved. We compute the
+/// delta against `PropTerrainAnchor.terrain_y` (cached at spawn) and
+/// shift the prop's Y by that amount, which keeps each prop's
+/// per-kind visual lift implicit in the existing `Transform.y`.
+/// `PropCollision.top_y` (used by the cat's climb-on-top snap) gets the
+/// same delta so it stays glued to the prop's visible top.
+pub fn snap_props_to_terrain(
+    chunks: Query<(&Children, &Chunk), Changed<Mesh3d>>,
+    mut props: Query<(
+        &mut Transform,
+        &mut PropTerrainAnchor,
+        Option<&mut PropCollision>,
+    )>,
+    terrain: Res<Terrain>,
+    noise: Res<WorldNoise>,
+) {
+    for (children, chunk) in &chunks {
+        let world_offset_x = (chunk.x * CHUNK_SIZE) as f32;
+        let world_offset_z = (chunk.z * CHUNK_SIZE) as f32;
+        for &child in children {
+            let Ok((mut tf, mut anchor, collision)) = props.get_mut(child) else {
+                continue;
+            };
+            let world_x = world_offset_x + tf.translation.x;
+            let world_z = world_offset_z + tf.translation.z;
+            let new_terrain_y = terrain.height_at_or_sample(world_x, world_z, &noise);
+            let delta = new_terrain_y - anchor.terrain_y;
+            if delta.abs() < 0.001 {
+                continue;
+            }
+            tf.translation.y += delta;
+            if let Some(mut col) = collision {
+                col.top_y += delta;
+            }
+            anchor.terrain_y = new_terrain_y;
         }
     }
 }

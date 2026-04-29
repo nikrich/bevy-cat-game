@@ -17,9 +17,12 @@
 //!   so children (props, water, collider) read with chunk-local transforms.
 
 use bevy::asset::RenderAssetUsages;
+use bevy::image::Image;
 use bevy::mesh::{Indices, PrimitiveTopology};
 use bevy::prelude::*;
+use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat};
 use bevy_rapier3d::prelude::{Collider, RigidBody};
+use noise::{NoiseFn, Perlin};
 use std::collections::{HashMap, HashSet};
 
 use super::biome::{Biome, WorldNoise};
@@ -96,12 +99,30 @@ impl ChunkData {
 /// set via the brush APIs so re-loading the chunk re-applies them on top
 /// of the PCG default. The keys are chunk-local indices in `0..CHUNK_CELLS`,
 /// matching the `vertex_owner` mapping used everywhere else.
+///
+/// `painted_cells` is a *transient* set of cells whose biome was painted
+/// since the last prop respawn pass. It's drained by
+/// `respawn_props_for_painted_cells` each frame; nothing else reads it,
+/// and it's never persisted (the durable record lives in `biome_edits`).
+///
+/// `dirty` and `color_dirty` partition chunk regen by reason:
+/// - `dirty` triggers a full mesh + trimesh collider rebuild — used for
+///   any height edit, since the chunk's surface geometry actually
+///   changed.
+/// - `color_dirty` triggers a mesh-only rebuild — used for biome paint,
+///   where heights are unchanged so the trimesh is *identical*.
+///   Rebuilding the rapier trimesh collider on every paint tick is
+///   what was causing parry's BVH builder to crash mid-painting; a
+///   biome change literally produces the same vert/tri buffers as the
+///   previous build, so re-handing them to rapier was pure churn.
 #[derive(Resource, Default)]
 pub struct Terrain {
     pub chunks: HashMap<ChunkCoord, ChunkData>,
     pub dirty: HashSet<ChunkCoord>,
+    pub color_dirty: HashSet<ChunkCoord>,
     pub edits: HashMap<ChunkCoord, HashMap<(u8, u8), f32>>,
     pub biome_edits: HashMap<ChunkCoord, HashMap<(u8, u8), Biome>>,
+    pub painted_cells: HashMap<ChunkCoord, HashSet<(u8, u8)>>,
 }
 
 impl Terrain {
@@ -257,7 +278,15 @@ impl Terrain {
             .entry((cx, cz))
             .or_default()
             .insert((lx as u8, lz as u8), new_biome);
-        self.dirty.insert((cx, cz));
+        self.painted_cells
+            .entry((cx, cz))
+            .or_default()
+            .insert((lx as u8, lz as u8));
+        // Biome change → mesh vertex colors need to refresh, but the
+        // trimesh collider stays identical. Use `color_dirty` so the
+        // regen system rebuilds the mesh only (closes the
+        // parry-BVH-crash-during-paint bug — see `Terrain` doc).
+        self.color_dirty.insert((cx, cz));
         true
     }
 
@@ -364,20 +393,85 @@ pub struct TerrainChunk;
 
 /// Shared chunk material. Vertex colours carry biome tint; the material
 /// stays generic so all chunks reuse the same `Handle<StandardMaterial>`
-/// (closes DEBT-008).
+/// (closes DEBT-008). The base-color texture is a procedurally generated
+/// tile-friendly grayscale noise map (W1.4) so each cell reads as
+/// "tinted textured ground" instead of flat color — the texture multiplies
+/// against the per-vertex biome tint, so biome colours stay dominant.
 #[derive(Resource)]
 pub struct TerrainMaterial(pub Handle<StandardMaterial>);
 
 impl FromWorld for TerrainMaterial {
     fn from_world(world: &mut World) -> Self {
+        let texture = generate_terrain_noise_image();
+        let texture_handle = world.resource_mut::<Assets<Image>>().add(texture);
         let mut materials = world.resource_mut::<Assets<StandardMaterial>>();
         let handle = materials.add(StandardMaterial {
             base_color: Color::WHITE,
+            base_color_texture: Some(texture_handle),
             perceptual_roughness: 0.92,
             ..default()
         });
         Self(handle)
     }
+}
+
+/// Generate a 128×128 sRGB noise tile that tiles cleanly across cell UVs.
+///
+/// Each cell's quad has UV `0..1`, so adjacent cells repeat the same tile.
+/// To avoid visible seams we sample 4D Perlin on a torus
+/// (`(cos 2πu, sin 2πu, cos 2πv, sin 2πv)`), which is automatically
+/// periodic on both axes. Output range is mapped to `[0.78, 1.0]`
+/// grayscale — subtle enough that the per-vertex biome tint stays
+/// dominant; the texture just keeps each cell from looking like a flat
+/// painted square. Risers reuse the same UV mapping; the noise reads as
+/// natural rocky face dapples on the vertical surfaces.
+fn generate_terrain_noise_image() -> Image {
+    const SIZE: usize = 128;
+    let perlin = Perlin::new(9999);
+    let two_pi = std::f64::consts::TAU;
+
+    let mut data = vec![0u8; SIZE * SIZE * 4];
+    for py in 0..SIZE {
+        for px in 0..SIZE {
+            let u = px as f64 / SIZE as f64;
+            let v = py as f64 / SIZE as f64;
+            // Two octaves on a torus: r=1.5 for broad bumps, r=3.5 for
+            // finer grain. Higher-frequency octave is half-weighted so
+            // total variation stays within ~[-1.5, 1.5].
+            let n1 = perlin.get([
+                (u * two_pi).cos() * 1.5,
+                (u * two_pi).sin() * 1.5,
+                (v * two_pi).cos() * 1.5,
+                (v * two_pi).sin() * 1.5,
+            ]);
+            let n2 = perlin.get([
+                (u * two_pi).cos() * 3.5,
+                (u * two_pi).sin() * 3.5,
+                (v * two_pi).cos() * 3.5,
+                (v * two_pi).sin() * 3.5,
+            ]) * 0.5;
+            let n = (n1 + n2) as f32;
+            let gray = (0.91 + n * 0.07).clamp(0.78, 1.0);
+            let g = (gray * 255.0) as u8;
+            let i = (py * SIZE + px) * 4;
+            data[i] = g;
+            data[i + 1] = g;
+            data[i + 2] = g;
+            data[i + 3] = 255;
+        }
+    }
+
+    Image::new(
+        Extent3d {
+            width: SIZE as u32,
+            height: SIZE as u32,
+            depth_or_array_layers: 1,
+        },
+        TextureDimension::D2,
+        data,
+        TextureFormat::Rgba8UnormSrgb,
+        RenderAssetUsages::RENDER_WORLD,
+    )
 }
 
 /// Linear-space biome tint, with a small position-derived shade variation
@@ -635,11 +729,17 @@ pub fn build_chunk_collider(geom: &ChunkGeometry) -> Option<Collider> {
 
 // ---------- Regen system ----------
 
-/// Up to [`REGEN_BUDGET_PER_FRAME`] dirty chunks per frame: rebuild the
-/// stepped-block geometry, swap in a fresh `Mesh3d` + trimesh `Collider`
-/// directly on the chunk entity. Chunks loaded via `load_nearby_chunks`
-/// start dirty, so this system handles both initial build and post-edit
-/// updates.
+/// Up to [`REGEN_BUDGET_PER_FRAME`] dirty chunks per frame, in two
+/// passes:
+/// 1. `terrain.dirty` (geometry change) — rebuild mesh + trimesh
+///    collider. Chunks loaded via `load_nearby_chunks` start here.
+/// 2. `terrain.color_dirty` (biome paint only) — rebuild mesh only,
+///    leaving the existing trimesh collider intact. The geometry hasn't
+///    changed, so re-handing parry an identical trimesh every paint
+///    tick was both wasted work and a parry-BVH-builder crash trigger.
+///
+/// A chunk in both sets is processed only by pass 1 — its mesh rebuilds
+/// already.
 pub fn regenerate_dirty_chunks(
     mut commands: Commands,
     mut terrain: ResMut<Terrain>,
@@ -648,18 +748,21 @@ pub fn regenerate_dirty_chunks(
     chunk_manager: Res<ChunkManager>,
     noise: Res<WorldNoise>,
 ) {
-    if terrain.dirty.is_empty() {
+    if terrain.dirty.is_empty() && terrain.color_dirty.is_empty() {
         return;
     }
-    let coords: Vec<ChunkCoord> = terrain
+    let geom_coords: Vec<ChunkCoord> = terrain
         .dirty
         .iter()
         .copied()
         .take(REGEN_BUDGET_PER_FRAME)
         .collect();
 
-    for coord in coords {
+    for coord in geom_coords {
         terrain.dirty.remove(&coord);
+        // Geometry rebuild already refreshes vertex colors, so skip the
+        // color-only pass for this chunk this frame.
+        terrain.color_dirty.remove(&coord);
         if !terrain.chunks.contains_key(&coord) {
             continue;
         }
@@ -686,6 +789,32 @@ pub fn regenerate_dirty_chunks(
             TerrainChunk,
             collider,
             RigidBody::Fixed,
+        ));
+    }
+
+    // Color-only pass: vertex tints changed but geometry didn't. Swap
+    // in a fresh `Mesh3d`; the existing collider component on the chunk
+    // entity is left untouched.
+    let color_coords: Vec<ChunkCoord> = terrain
+        .color_dirty
+        .iter()
+        .copied()
+        .take(REGEN_BUDGET_PER_FRAME)
+        .collect();
+    for coord in color_coords {
+        terrain.color_dirty.remove(&coord);
+        if !terrain.chunks.contains_key(&coord) {
+            continue;
+        }
+        let Some(&chunk_entity) = chunk_manager.loaded.get(&coord) else {
+            continue;
+        };
+        let geom = build_chunk_geometry(coord, &terrain, &noise);
+        let mesh = meshes.add(build_chunk_mesh(&geom));
+        commands.entity(chunk_entity).try_insert((
+            Mesh3d(mesh),
+            MeshMaterial3d(terrain_material.0.clone()),
+            TerrainChunk,
         ));
     }
 }

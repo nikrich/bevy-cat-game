@@ -18,6 +18,7 @@ impl Plugin for WorldPlugin {
             .init_resource::<biome::WorldNoise>()
             .init_resource::<terrain::Terrain>()
             .init_resource::<terrain::TerrainMaterial>()
+            .init_resource::<props::PropAssets>()
             .init_resource::<water::WaterAssets>()
             .init_resource::<daynight::WorldTime>()
             .add_message::<chunks::ChunkLoaded>()
@@ -40,8 +41,11 @@ impl Plugin for WorldPlugin {
                         terrain::regenerate_dirty_chunks,
                         water::spawn_chunk_water,
                         props::spawn_chunk_props,
+                        props::respawn_props_for_painted_cells,
+                        props::animate_prop_spawn_pop,
                     )
                         .chain(),
+                    props::snap_props_to_terrain,
                     props::sway_props_near_player,
                     props::apply_prop_sway,
                     daynight::advance_time,
