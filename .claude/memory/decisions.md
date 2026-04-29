@@ -64,6 +64,22 @@
 - **Alternatives**: serde + serde_json (automatic, more robust), bincode (compact, not human-readable), RON (Rust-native but still a dependency)
 - **Consequences**: Fragile parser that needs manual updates when save format changes. Works for current scope but should migrate to serde if save format grows complex (more entity types, world state, etc.)
 
+## DEC-010: Registry-based combinatorial item system
+- **Date**: 2026-04-29
+- **Status**: Accepted
+- **Context**: Hardcoded ItemKind enum has 15 items. User wants thousands of items to support beautiful houses with furniture. Authoring thousands of variants by hand is infeasible
+- **Decision**: Replace ItemKind enum with `ItemId(u32)` handles into an `ItemRegistry`. Items are generated combinatorially as `(Form, Material)` pairs. Forms are visual archetypes (Chair, Wall, Lamp, ...), Materials are palette/properties (Pine, Oak, Stone, ...). Recipes are templated against MaterialFamily so one "Chair" recipe yields Pine Chair / Oak Chair / Birch Chair from the player's choice of input
+- **Alternatives**: Hand-authored item enum (doesn't scale), pure procedural generation (loses authorial control), tag-only system (less data-oriented)
+- **Consequences**: Cross-cutting refactor across inventory, crafting, building, gathering, save, ui. Display names generated from registry. Mesh handles cached per Form so spawn cost stays flat. Enables phases 3/4/5 (browser UI, modular houses, dyes). Breaks DEC-008 -- save must move to serde (DEC-011)
+
+## DEC-011: Migrate save format to serde
+- **Date**: 2026-04-29
+- **Status**: Accepted (supersedes DEC-008)
+- **Context**: DEC-008 chose hand-written JSON to avoid the serde dependency. With registry-based items (DEC-010) the save format must serialize ItemId, RecipeId, building grid cells, and per-instance tints. Hand-rolling that is fragile
+- **Decision**: Adopt `serde` + `serde_json` for save/load. Keep .json on disk for human-readability. Persist items by stable string key (Form_name + Material_name) rather than numeric ItemId so registry rebuilds across sessions remain compatible
+- **Alternatives**: Keep manual parser (breaks under registry), bincode (compact but unreadable), RON (Rust-native but extra dep with no human-readable advantage over JSON)
+- **Consequences**: One added dependency. ~50 lines of save.rs become a few derive macros. DEBT-009 closes when migration lands
+
 ## DEC-009: Temperature/moisture biome classification
 - **Date**: 2026-04-29
 - **Status**: Accepted

@@ -88,7 +88,7 @@
 - **Why**: Avoided serde dependency (DEC-008)
 - **Fix when**: When save format grows beyond current 3 sections (player, inventory, buildings)
 - **Effort**: M
-- **Status**: Open
+- **Status**: Resolved (2026-04-29) -- migrated to serde + serde_json under DEC-011, save now uses registry save_keys with legacy migration shim
 
 ## DEBT-010: Crafting UI needs polish
 - **Added**: 2026-04-29
@@ -98,7 +98,7 @@
 - **Why**: Built quickly with basic Bevy UI nodes
 - **Fix when**: Next UI pass
 - **Effort**: M
-- **Status**: Open
+- **Status**: Resolved (2026-04-29) -- ported menu to Spiritfarer-inspired painted panel chrome (SVG-authored 9-slice PNG, Cinzel/Nunito fonts, gold border ornaments, flourish footer); added category tabs (Refining/Furniture/Building/Decor/Food); fixed row alignment and right-edge overflow
 
 ## DEBT-011: No game states
 - **Added**: 2026-04-29

@@ -1,9 +1,12 @@
 use bevy::prelude::*;
+use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
 
-use crate::building::PlacedBuilding;
-use crate::inventory::{Inventory, InventoryChanged, ItemKind};
+use crate::building::{spawn_placed_building, PlacedBuilding};
+use crate::inventory::{Inventory, InventoryChanged};
+use crate::items::ItemRegistry;
 use crate::player::Player;
 
 pub struct SavePlugin;
@@ -11,7 +14,10 @@ pub struct SavePlugin;
 impl Plugin for SavePlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<SaveTimer>()
-            .add_systems(Startup, load_game)
+            .add_systems(
+                Startup,
+                load_game.after(crate::items::registry::seed_default_items),
+            )
             .add_systems(Update, auto_save);
     }
 }
@@ -35,76 +41,129 @@ fn save_path() -> PathBuf {
     PathBuf::from(SAVE_FILE)
 }
 
-/// Simple JSON-compatible save format using manual serialization
-/// (avoids adding serde dependency)
+#[derive(Serialize, Deserialize)]
+struct SaveData {
+    player: [f32; 3],
+    /// Keys are item save_keys (e.g. "plank.oak", "log.pine").
+    inventory: HashMap<String, u32>,
+    buildings: Vec<BuildingSave>,
+}
+
+#[derive(Serialize, Deserialize)]
+struct BuildingSave {
+    /// Item save_key (e.g. "fence.oak").
+    item: String,
+    x: f32,
+    y: f32,
+    z: f32,
+    rot: f32,
+}
+
+#[derive(Resource)]
+pub struct LoadedPlayerPos(pub Vec3);
+
+/// Translate the pre-registry ItemKind variant names ("Wood", "Plank", etc.)
+/// to the new save_key scheme. Returns None for unknown legacy names.
+fn legacy_item_to_save_key(legacy: &str) -> Option<&'static str> {
+    Some(match legacy {
+        "Wood" => "log.oak",
+        "PineWood" => "log.pine",
+        "Stone" => "stone.stone",
+        "Flower" => "flower.flower",
+        "Mushroom" => "mushroom.mushroom",
+        "Bush" => "bush.bush",
+        "Cactus" => "cactus.cactus",
+        "Plank" => "plank.oak",
+        "StoneBrick" => "brick.stone",
+        "Fence" => "fence.oak",
+        "Bench" => "bench.oak",
+        "Lantern" => "lantern.stone",
+        "FlowerPot" => "flowerpot.stone",
+        "Stew" => "stew.none",
+        "Wreath" => "wreath.none",
+        _ => return None,
+    })
+}
+
+/// Returns the canonical save_key for whatever the file key was -- either
+/// already a registry save_key, or a legacy ItemKind variant name we still
+/// understand.
+fn canonical_save_key(raw: &str) -> Option<String> {
+    if raw.contains('.') {
+        Some(raw.to_string())
+    } else {
+        legacy_item_to_save_key(raw).map(|s| s.to_string())
+    }
+}
+
 fn auto_save(
     mut save_timer: ResMut<SaveTimer>,
     time: Res<Time>,
     inventory: Res<Inventory>,
+    registry: Res<ItemRegistry>,
     player_query: Query<&Transform, With<Player>>,
     buildings: Query<(&PlacedBuilding, &Transform)>,
     input: Res<crate::input::GameInput>,
 ) {
     save_timer.timer.tick(time.delta());
-
     let manual_save = input.save;
 
     if !save_timer.timer.just_finished() && !manual_save {
         return;
     }
 
-    let Ok(player_tf) = player_query.single() else {
-        return;
-    };
+    let Ok(player_tf) = player_query.single() else { return };
 
-    let mut save_data = String::from("{\n");
+    let mut inv_map = HashMap::new();
+    for (id, count) in &inventory.items {
+        if *count == 0 {
+            continue;
+        }
+        if let Some(def) = registry.get(*id) {
+            inv_map.insert(def.save_key.clone(), *count);
+        }
+    }
 
-    // Player position
-    save_data.push_str(&format!(
-        "  \"player\": [{:.2}, {:.2}, {:.2}],\n",
-        player_tf.translation.x, player_tf.translation.y, player_tf.translation.z
-    ));
-
-    // Inventory
-    save_data.push_str("  \"inventory\": {");
-    let inv_entries: Vec<String> = inventory
-        .items
+    let buildings_vec: Vec<BuildingSave> = buildings
         .iter()
-        .filter(|(_, count)| **count > 0)
-        .map(|(item, count)| format!("\"{:?}\": {}", item, count))
-        .collect();
-    save_data.push_str(&inv_entries.join(", "));
-    save_data.push_str("},\n");
-
-    // Buildings
-    save_data.push_str("  \"buildings\": [\n");
-    let building_entries: Vec<String> = buildings
-        .iter()
-        .map(|(building, tf)| {
-            format!(
-                "    {{\"item\": \"{:?}\", \"x\": {:.2}, \"y\": {:.2}, \"z\": {:.2}, \"rot\": {:.4}}}",
-                building.item,
-                tf.translation.x,
-                tf.translation.y,
-                tf.translation.z,
-                tf.rotation.to_euler(EulerRot::YXZ).0
-            )
+        .filter_map(|(b, tf)| {
+            let def = registry.get(b.item)?;
+            Some(BuildingSave {
+                item: def.save_key.clone(),
+                x: tf.translation.x,
+                y: tf.translation.y,
+                z: tf.translation.z,
+                rot: tf.rotation.to_euler(EulerRot::YXZ).0,
+            })
         })
         .collect();
-    save_data.push_str(&building_entries.join(",\n"));
-    save_data.push_str("\n  ]\n");
 
-    save_data.push('}');
+    let data = SaveData {
+        player: [
+            player_tf.translation.x,
+            player_tf.translation.y,
+            player_tf.translation.z,
+        ],
+        inventory: inv_map,
+        buildings: buildings_vec,
+    };
 
-    if let Err(e) = fs::write(save_path(), &save_data) {
-        warn!("Failed to save: {}", e);
-    } else if manual_save {
-        info!("Game saved!");
+    match serde_json::to_string_pretty(&data) {
+        Ok(json) => {
+            if let Err(e) = fs::write(save_path(), json) {
+                warn!("Failed to save: {}", e);
+            } else if manual_save {
+                info!("Game saved!");
+            }
+        }
+        Err(e) => warn!("Save serialization failed: {}", e),
     }
 }
 
 fn load_game(
     mut commands: Commands,
+    registry: Res<ItemRegistry>,
+    asset_server: Res<AssetServer>,
     mut inventory: ResMut<Inventory>,
     mut inv_events: EventWriter<InventoryChanged>,
     mut meshes: ResMut<Assets<Mesh>>,
@@ -118,163 +177,49 @@ fn load_game(
 
     info!("Loading save from {}", path.display());
 
-    // Simple JSON parsing for our known format
-    // Parse player position
-    if let Some(player_str) = extract_json_array(&data, "player") {
-        let coords: Vec<f32> = player_str
-            .split(',')
-            .filter_map(|s| s.trim().parse().ok())
-            .collect();
-        if coords.len() == 3 {
-            // We'll set player position via a resource
-            commands.insert_resource(LoadedPlayerPos(Vec3::new(coords[0], coords[1], coords[2])));
+    let save: SaveData = match serde_json::from_str(&data) {
+        Ok(s) => s,
+        Err(e) => {
+            warn!("Save file failed to parse, starting fresh: {}", e);
+            return;
         }
-    }
+    };
 
-    // Parse inventory
-    if let Some(inv_str) = extract_json_object(&data, "inventory") {
-        for entry in inv_str.split(',') {
-            let parts: Vec<&str> = entry.split(':').collect();
-            if parts.len() == 2 {
-                let key = parts[0].trim().trim_matches('"');
-                let count: u32 = parts[1].trim().parse().unwrap_or(0);
-                if let Some(item) = parse_item_kind(key) {
-                    if count > 0 {
-                        inventory.add(item, count);
-                        inv_events.write(InventoryChanged {
-                            item,
-                            new_count: count,
-                        });
-                    }
-                }
-            }
+    commands.insert_resource(LoadedPlayerPos(Vec3::from(save.player)));
+
+    for (raw_key, count) in save.inventory {
+        if count == 0 {
+            continue;
         }
+        let Some(key) = canonical_save_key(&raw_key) else {
+            warn!("Unknown inventory key in save: {raw_key}");
+            continue;
+        };
+        let Some(id) = registry.lookup_save_key(&key) else {
+            warn!("Inventory key not in registry: {key}");
+            continue;
+        };
+        inventory.add(id, count);
+        inv_events.write(InventoryChanged { item: id, new_count: count });
     }
 
-    // Parse buildings
-    if let Some(buildings_str) = extract_json_array_objects(&data, "buildings") {
-        for building_str in buildings_str {
-            let item_str = extract_field(&building_str, "item").unwrap_or_default();
-            let x: f32 = extract_field(&building_str, "x")
-                .and_then(|s| s.parse().ok())
-                .unwrap_or(0.0);
-            let y: f32 = extract_field(&building_str, "y")
-                .and_then(|s| s.parse().ok())
-                .unwrap_or(0.0);
-            let z: f32 = extract_field(&building_str, "z")
-                .and_then(|s| s.parse().ok())
-                .unwrap_or(0.0);
-            let rot: f32 = extract_field(&building_str, "rot")
-                .and_then(|s| s.parse().ok())
-                .unwrap_or(0.0);
-
-            if let Some(item) = parse_item_kind(&item_str) {
-                let (mesh, color, scale) = crate::building::building_visual_pub(item);
-                let mesh_handle = meshes.add(mesh);
-                let mat_handle = materials.add(StandardMaterial {
-                    base_color: color,
-                    perceptual_roughness: 0.8,
-                    ..default()
-                });
-
-                commands.spawn((
-                    PlacedBuilding { item },
-                    Mesh3d(mesh_handle),
-                    MeshMaterial3d(mat_handle),
-                    Transform::from_xyz(x, y, z)
-                        .with_rotation(Quat::from_rotation_y(rot))
-                        .with_scale(scale),
-                ));
-            }
-        }
-    }
-}
-
-#[derive(Resource)]
-pub struct LoadedPlayerPos(pub Vec3);
-
-fn parse_item_kind(s: &str) -> Option<ItemKind> {
-    match s {
-        "Wood" => Some(ItemKind::Wood),
-        "Stone" => Some(ItemKind::Stone),
-        "Flower" => Some(ItemKind::Flower),
-        "Mushroom" => Some(ItemKind::Mushroom),
-        "Bush" => Some(ItemKind::Bush),
-        "Cactus" => Some(ItemKind::Cactus),
-        "PineWood" => Some(ItemKind::PineWood),
-        "Plank" => Some(ItemKind::Plank),
-        "StoneBrick" => Some(ItemKind::StoneBrick),
-        "Fence" => Some(ItemKind::Fence),
-        "Bench" => Some(ItemKind::Bench),
-        "Lantern" => Some(ItemKind::Lantern),
-        "FlowerPot" => Some(ItemKind::FlowerPot),
-        "Stew" => Some(ItemKind::Stew),
-        "Wreath" => Some(ItemKind::Wreath),
-        _ => None,
-    }
-}
-
-// Simple JSON helpers (avoiding serde dependency)
-fn extract_json_array(data: &str, key: &str) -> Option<String> {
-    let pattern = format!("\"{}\":", key);
-    let start = data.find(&pattern)? + pattern.len();
-    let bracket_start = data[start..].find('[')? + start + 1;
-    let bracket_end = data[bracket_start..].find(']')? + bracket_start;
-    Some(data[bracket_start..bracket_end].to_string())
-}
-
-fn extract_json_object(data: &str, key: &str) -> Option<String> {
-    let pattern = format!("\"{}\":", key);
-    let start = data.find(&pattern)? + pattern.len();
-    let brace_start = data[start..].find('{')? + start + 1;
-    let brace_end = data[brace_start..].find('}')? + brace_start;
-    Some(data[brace_start..brace_end].to_string())
-}
-
-fn extract_json_array_objects(data: &str, key: &str) -> Option<Vec<String>> {
-    let pattern = format!("\"{}\":", key);
-    let start = data.find(&pattern)? + pattern.len();
-    let bracket_start = data[start..].find('[')? + start + 1;
-    let bracket_end = data[bracket_start..].find(']')? + bracket_start;
-    let inner = &data[bracket_start..bracket_end];
-
-    let mut objects = Vec::new();
-    let mut depth = 0;
-    let mut obj_start = None;
-    for (i, c) in inner.char_indices() {
-        match c {
-            '{' => {
-                if depth == 0 {
-                    obj_start = Some(i);
-                }
-                depth += 1;
-            }
-            '}' => {
-                depth -= 1;
-                if depth == 0 {
-                    if let Some(start) = obj_start {
-                        objects.push(inner[start + 1..i].to_string());
-                    }
-                }
-            }
-            _ => {}
-        }
-    }
-    Some(objects)
-}
-
-fn extract_field(obj: &str, key: &str) -> Option<String> {
-    let pattern = format!("\"{}\":", key);
-    let start = obj.find(&pattern)? + pattern.len();
-    let rest = obj[start..].trim();
-
-    if rest.starts_with('"') {
-        let end = rest[1..].find('"')? + 1;
-        Some(rest[1..end].to_string())
-    } else {
-        let end = rest
-            .find(|c: char| c == ',' || c == '}' || c == ']')
-            .unwrap_or(rest.len());
-        Some(rest[..end].trim().to_string())
+    for b in save.buildings {
+        let Some(key) = canonical_save_key(&b.item) else {
+            warn!("Unknown building key in save: {}", b.item);
+            continue;
+        };
+        let Some(id) = registry.lookup_save_key(&key) else {
+            warn!("Building key not in registry: {key}");
+            continue;
+        };
+        spawn_placed_building(
+            &mut commands,
+            &registry,
+            &asset_server,
+            &mut meshes,
+            &mut materials,
+            id,
+            Transform::from_xyz(b.x, b.y, b.z).with_rotation(Quat::from_rotation_y(b.rot)),
+        );
     }
 }

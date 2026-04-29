@@ -10,7 +10,19 @@ impl Plugin for InputPlugin {
         app.init_resource::<GameInput>()
             .add_systems(
                 PreUpdate,
-                (clear_input, read_keyboard_mouse, read_gamepad, compute_cursor_world).chain(),
+                (
+                    clear_input,
+                    read_keyboard_mouse,
+                    read_gamepad,
+                    compute_cursor_world,
+                )
+                    .chain(),
+            )
+            .add_systems(
+                PreUpdate,
+                resolve_world_click
+                    .after(compute_cursor_world)
+                    .after(bevy::ui::UiSystem::Focus),
             );
     }
 }
@@ -42,6 +54,14 @@ pub struct GameInput {
 
     /// Whether input is coming from gamepad (affects UI hints)
     pub using_gamepad: bool,
+
+    /// True if cursor is hovering or pressing any interactive UI node this frame.
+    /// Set after UI focus has been resolved so consumers can disambiguate UI clicks from world clicks.
+    pub pointer_over_ui: bool,
+
+    /// Raw left-mouse just-pressed state. Use this when you want UI clicks too;
+    /// otherwise read `interact` / `place` which are gated by `pointer_over_ui`.
+    pub mouse_left_just_pressed: bool,
 }
 
 fn clear_input(mut input: ResMut<GameInput>) {
@@ -80,11 +100,13 @@ fn read_keyboard_mouse(
         dir.x * angle.sin() + dir.y * angle.cos(),
     );
 
-    // Actions
-    input.interact = keyboard.just_pressed(KeyCode::KeyE) || mouse.just_pressed(MouseButton::Left);
+    // Actions -- mouse-derived contributions to interact/place are deferred to
+    // `resolve_world_click` so UI clicks don't fall through to the world.
+    input.mouse_left_just_pressed = mouse.just_pressed(MouseButton::Left);
+    input.interact = keyboard.just_pressed(KeyCode::KeyE);
     input.toggle_craft = keyboard.just_pressed(KeyCode::Tab);
     input.toggle_build = keyboard.just_pressed(KeyCode::KeyB);
-    input.place = keyboard.just_pressed(KeyCode::Space) || mouse.just_pressed(MouseButton::Left);
+    input.place = keyboard.just_pressed(KeyCode::Space);
     input.rotate = keyboard.just_pressed(KeyCode::KeyR);
     input.save = keyboard.just_pressed(KeyCode::F5);
 
@@ -207,4 +229,23 @@ fn compute_cursor_world(
 
     let world_pos = ray.origin + *ray.direction * t;
     input.cursor_world = Some(world_pos);
+}
+
+/// Decides whether a left-mouse press counts as a world click (gather/place) or a UI click.
+/// Runs after Bevy has updated `Interaction` for UI nodes this frame.
+fn resolve_world_click(
+    interactions: Query<&Interaction>,
+    crafting: Res<crate::crafting::CraftingState>,
+    mut input: ResMut<GameInput>,
+) {
+    let pointer_over_ui = interactions
+        .iter()
+        .any(|i| !matches!(i, Interaction::None));
+    input.pointer_over_ui = pointer_over_ui;
+
+    let world_click = input.mouse_left_just_pressed && !pointer_over_ui && !crafting.open;
+    if world_click {
+        input.interact = true;
+        input.place = true;
+    }
 }

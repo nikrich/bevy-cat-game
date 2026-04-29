@@ -5,6 +5,7 @@ mod crafting;
 mod gathering;
 mod input;
 mod inventory;
+mod items;
 mod particles;
 mod player;
 mod save;
@@ -26,6 +27,7 @@ fn main() {
         .insert_resource(ClearColor(Color::srgb(0.54, 0.70, 0.52)))
         .add_plugins((
             input::InputPlugin,
+            items::ItemsPlugin,
             world::WorldPlugin,
             player::PlayerPlugin,
             camera::CameraPlugin,

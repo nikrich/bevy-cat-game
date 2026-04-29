@@ -1,7 +1,8 @@
 use bevy::prelude::*;
 
 use crate::input::GameInput;
-use crate::inventory::{Inventory, InventoryChanged, ItemKind};
+use crate::inventory::{Inventory, InventoryChanged};
+use crate::items::{ItemId, ItemRegistry, ItemTags};
 use crate::player::Player;
 use crate::world::biome::WorldNoise;
 use crate::world::chunks::ChunkManager;
@@ -12,20 +13,37 @@ pub struct BuildingPlugin;
 impl Plugin for BuildingPlugin {
     fn build(&self, app: &mut App) {
         app.add_event::<PlaceEvent>()
+            .init_resource::<PlaceableItems>()
+            .add_systems(
+                Startup,
+                init_placeable_items.after(crate::items::registry::seed_default_items),
+            )
             .add_systems(
                 Update,
-                (toggle_build_mode, select_build_item, update_preview, place_building),
+                (
+                    toggle_build_mode,
+                    select_build_item,
+                    update_preview,
+                    place_building,
+                ),
             );
     }
 }
 
-const PLACEABLE_ITEMS: &[ItemKind] = &[
-    ItemKind::Fence,
-    ItemKind::Bench,
-    ItemKind::Lantern,
-    ItemKind::FlowerPot,
-    ItemKind::Wreath,
-];
+/// Cached list of placeable item IDs (anything tagged PLACEABLE in the registry),
+/// in stable registration order. Used by the build hotbar and BuildMode.selected.
+#[derive(Resource, Default)]
+pub struct PlaceableItems(pub Vec<ItemId>);
+
+fn init_placeable_items(
+    registry: Res<ItemRegistry>,
+    mut placeables: ResMut<PlaceableItems>,
+) {
+    placeables.0 = registry
+        .iter_with_tag(ItemTags::PLACEABLE)
+        .map(|d| d.id)
+        .collect();
+}
 
 #[derive(Resource)]
 pub struct BuildMode {
@@ -35,14 +53,14 @@ pub struct BuildMode {
 }
 
 impl BuildMode {
-    pub fn selected_item(&self) -> ItemKind {
-        PLACEABLE_ITEMS[self.selected]
+    pub fn selected_item(&self, placeables: &PlaceableItems) -> Option<ItemId> {
+        placeables.0.get(self.selected).copied()
     }
 }
 
 #[derive(Component)]
 pub struct PlacedBuilding {
-    pub item: ItemKind,
+    pub item: ItemId,
 }
 
 #[derive(Component)]
@@ -50,7 +68,7 @@ struct BuildPreview;
 
 #[derive(Event)]
 pub struct PlaceEvent {
-    pub item: ItemKind,
+    pub item: ItemId,
     pub position: Vec3,
 }
 
@@ -59,6 +77,8 @@ fn toggle_build_mode(
     input: Res<GameInput>,
     build_mode: Option<Res<BuildMode>>,
     inventory: Res<Inventory>,
+    placeables: Res<PlaceableItems>,
+    registry: Res<ItemRegistry>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
 ) {
@@ -68,95 +88,104 @@ fn toggle_build_mode(
 
     match build_mode {
         Some(mode) => {
-            // Clean up preview
             if let Some(preview) = mode.preview_entity {
                 commands.entity(preview).despawn();
             }
             commands.remove_resource::<BuildMode>();
         }
         None => {
-            let has_placeables = PLACEABLE_ITEMS
+            let selected = placeables
+                .0
                 .iter()
-                .any(|item| inventory.count(*item) > 0);
-            if has_placeables {
-                // Find first available item
-                let selected = PLACEABLE_ITEMS
-                    .iter()
-                    .position(|item| inventory.count(*item) > 0)
-                    .unwrap_or(0);
-
-                // Spawn preview entity
-                let item = PLACEABLE_ITEMS[selected];
-                let (mesh, color, scale) = building_visual(item);
-                let preview = commands
-                    .spawn((
-                        BuildPreview,
-                        Mesh3d(meshes.add(mesh)),
-                        MeshMaterial3d(materials.add(StandardMaterial {
-                            base_color: color.with_alpha(0.5),
-                            alpha_mode: AlphaMode::Blend,
-                            ..default()
-                        })),
-                        Transform::from_xyz(0.0, -100.0, 0.0).with_scale(scale),
-                    ))
-                    .id();
-
-                commands.insert_resource(BuildMode {
-                    selected,
-                    rotation: 0.0,
-                    preview_entity: Some(preview),
-                });
+                .position(|id| inventory.count(*id) > 0)
+                .unwrap_or(0);
+            let mut mode = BuildMode {
+                selected,
+                rotation: 0.0,
+                preview_entity: None,
+            };
+            if let Some(item) = placeables.0.get(selected).copied() {
+                if inventory.count(item) > 0 {
+                    refresh_build_preview(
+                        &mut commands,
+                        &mut mode,
+                        item,
+                        &registry,
+                        &mut meshes,
+                        &mut materials,
+                    );
+                }
             }
+            commands.insert_resource(mode);
         }
     }
+}
+
+/// Despawn the current build preview (if any) and spawn a fresh one for `item`.
+pub fn refresh_build_preview(
+    commands: &mut Commands,
+    mode: &mut BuildMode,
+    item: ItemId,
+    registry: &ItemRegistry,
+    meshes: &mut ResMut<Assets<Mesh>>,
+    materials: &mut ResMut<Assets<StandardMaterial>>,
+) {
+    if let Some(preview) = mode.preview_entity.take() {
+        commands.entity(preview).despawn();
+    }
+    let Some(def) = registry.get(item) else { return };
+    let mesh = def.form.make_mesh();
+    let color = def.material.base_color();
+    let preview = commands
+        .spawn((
+            BuildPreview,
+            Mesh3d(meshes.add(mesh)),
+            MeshMaterial3d(materials.add(StandardMaterial {
+                base_color: color.with_alpha(0.5),
+                alpha_mode: AlphaMode::Blend,
+                ..default()
+            })),
+            Transform::from_xyz(0.0, -100.0, 0.0),
+        ))
+        .id();
+    mode.preview_entity = Some(preview);
 }
 
 fn select_build_item(
     mut commands: Commands,
     input: Res<GameInput>,
     mut build_mode: Option<ResMut<BuildMode>>,
+    placeables: Res<PlaceableItems>,
     inventory: Res<Inventory>,
+    registry: Res<ItemRegistry>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
 ) {
     let Some(mode) = &mut build_mode else { return };
+    let n = placeables.0.len();
+    if n == 0 {
+        return;
+    }
 
     if let Some(slot) = input.build_select {
         let new_idx = match slot {
-            99 => (mode.selected + 1) % PLACEABLE_ITEMS.len(), // next (gamepad)
-            98 => {
-                if mode.selected == 0 {
-                    PLACEABLE_ITEMS.len() - 1
-                } else {
-                    mode.selected - 1
-                }
-            } // prev (gamepad)
-            i if i < PLACEABLE_ITEMS.len() => i,
+            99 => (mode.selected + 1) % n,            // next (gamepad)
+            98 => (mode.selected + n - 1) % n,        // prev (gamepad)
+            i if i < n => i,
             _ => return,
         };
-
-        if inventory.count(PLACEABLE_ITEMS[new_idx]) > 0 {
-            mode.selected = new_idx;
-
-            // Update preview mesh
-            if let Some(preview) = mode.preview_entity {
-                commands.entity(preview).despawn();
+        if let Some(item) = placeables.0.get(new_idx).copied() {
+            if inventory.count(item) > 0 && new_idx != mode.selected {
+                mode.selected = new_idx;
+                refresh_build_preview(
+                    &mut commands,
+                    mode,
+                    item,
+                    &registry,
+                    &mut meshes,
+                    &mut materials,
+                );
             }
-            let item = PLACEABLE_ITEMS[new_idx];
-            let (mesh, color, scale) = building_visual(item);
-            let preview = commands
-                .spawn((
-                    BuildPreview,
-                    Mesh3d(meshes.add(mesh)),
-                    MeshMaterial3d(materials.add(StandardMaterial {
-                        base_color: color.with_alpha(0.5),
-                        alpha_mode: AlphaMode::Blend,
-                        ..default()
-                    })),
-                    Transform::from_xyz(0.0, -100.0, 0.0).with_scale(scale),
-                ))
-                .id();
-            mode.preview_entity = Some(preview);
         }
     }
 
@@ -177,7 +206,6 @@ fn update_preview(
 
     let noise = WorldNoise::new(chunk_manager.seed);
 
-    // Use cursor world position (mouse) or position in front of player (gamepad)
     let place_pos = if let Some(cursor) = input.cursor_world {
         cursor
     } else if let Ok(player_gt) = player_query.single() {
@@ -203,6 +231,9 @@ fn place_building(
     mut commands: Commands,
     input: Res<GameInput>,
     build_mode: Option<Res<BuildMode>>,
+    placeables: Res<PlaceableItems>,
+    registry: Res<ItemRegistry>,
+    asset_server: Res<AssetServer>,
     mut inventory: ResMut<Inventory>,
     mut inv_events: EventWriter<InventoryChanged>,
     mut place_events: EventWriter<PlaceEvent>,
@@ -211,12 +242,11 @@ fn place_building(
     mut materials: ResMut<Assets<StandardMaterial>>,
 ) {
     let Some(mode) = &build_mode else { return };
-
     if !input.place {
         return;
     }
 
-    let item = mode.selected_item();
+    let Some(item) = placeables.0.get(mode.selected).copied() else { return };
     if inventory.count(item) == 0 {
         return;
     }
@@ -224,7 +254,6 @@ fn place_building(
     let Ok(preview_tf) = previews.single() else { return };
     let place_pos = preview_tf.translation;
 
-    // Consume item
     let entry = inventory.items.entry(item).or_insert(0);
     *entry = entry.saturating_sub(1);
     inv_events.write(InventoryChanged {
@@ -232,24 +261,21 @@ fn place_building(
         new_count: inventory.count(item),
     });
 
-    place_events.write(PlaceEvent { item, position: place_pos });
+    place_events.write(PlaceEvent {
+        item,
+        position: place_pos,
+    });
 
-    // Spawn the building
-    let (mesh, color, scale) = building_visual(item);
-    commands.spawn((
-        PlacedBuilding { item },
-        Mesh3d(meshes.add(mesh)),
-        MeshMaterial3d(materials.add(StandardMaterial {
-            base_color: color,
-            perceptual_roughness: 0.8,
-            ..default()
-        })),
-        Transform::from_translation(place_pos)
-            .with_rotation(Quat::from_rotation_y(mode.rotation))
-            .with_scale(scale),
-    ));
+    spawn_placed_building(
+        &mut commands,
+        &registry,
+        &asset_server,
+        &mut meshes,
+        &mut materials,
+        item,
+        Transform::from_translation(place_pos).with_rotation(Quat::from_rotation_y(mode.rotation)),
+    );
 
-    // Exit build mode if no more of this item
     if inventory.count(item) == 0 {
         if let Some(preview) = mode.preview_entity {
             commands.entity(preview).despawn();
@@ -258,41 +284,40 @@ fn place_building(
     }
 }
 
-fn building_visual(item: ItemKind) -> (Mesh, Color, Vec3) {
-    match item {
-        ItemKind::Fence => (
-            Mesh::from(Cuboid::new(1.0, 0.6, 0.08)),
-            Color::srgb(0.60, 0.45, 0.28),
-            Vec3::ONE,
-        ),
-        ItemKind::Bench => (
-            Mesh::from(Cuboid::new(1.0, 0.35, 0.4)),
-            Color::srgb(0.50, 0.35, 0.20),
-            Vec3::ONE,
-        ),
-        ItemKind::Lantern => (
-            Mesh::from(Cylinder::new(0.1, 0.5)),
-            Color::srgb(0.90, 0.80, 0.40),
-            Vec3::ONE,
-        ),
-        ItemKind::FlowerPot => (
-            Mesh::from(Cylinder::new(0.15, 0.25)),
-            Color::srgb(0.72, 0.45, 0.35),
-            Vec3::ONE,
-        ),
-        ItemKind::Wreath => (
-            Mesh::from(Torus::new(0.05, 0.2)),
-            Color::srgb(0.40, 0.65, 0.35),
-            Vec3::ONE,
-        ),
-        _ => (
-            Mesh::from(Cuboid::new(0.3, 0.3, 0.3)),
-            Color::srgb(0.5, 0.5, 0.5),
-            Vec3::ONE,
-        ),
-    }
-}
+/// Spawn a placed building from a known transform. Used by `place_building`
+/// and by save/load. If the item's `Form` has a glTF `scene_path`, spawn a
+/// `SceneRoot` of the Kenney model; otherwise fall back to the procedural
+/// primitive mesh tinted by `Material::base_color`.
+pub fn spawn_placed_building(
+    commands: &mut Commands,
+    registry: &ItemRegistry,
+    asset_server: &AssetServer,
+    meshes: &mut ResMut<Assets<Mesh>>,
+    materials: &mut ResMut<Assets<StandardMaterial>>,
+    item: ItemId,
+    transform: Transform,
+) {
+    let Some(def) = registry.get(item) else { return };
 
-pub fn building_visual_pub(item: ItemKind) -> (Mesh, Color, Vec3) {
-    building_visual(item)
+    if let Some(path) = def.form.scene_path() {
+        commands.spawn((
+            PlacedBuilding { item },
+            SceneRoot(asset_server.load(path)),
+            transform,
+        ));
+        return;
+    }
+
+    let mesh = def.form.make_mesh();
+    let color = def.material.base_color();
+    commands.spawn((
+        PlacedBuilding { item },
+        Mesh3d(meshes.add(mesh)),
+        MeshMaterial3d(materials.add(StandardMaterial {
+            base_color: color,
+            perceptual_roughness: 0.8,
+            ..default()
+        })),
+        transform,
+    ));
 }

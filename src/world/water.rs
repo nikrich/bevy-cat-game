@@ -20,6 +20,17 @@ pub fn init_water_ripples(
     }
 }
 
+/// Sample a continuous wave field at a world position. Wavelengths are tens of tiles wide
+/// so neighboring tiles sit at nearly the same phase, giving a coupled "swell" look rather
+/// than independent bobbing. Superposing several directions/frequencies keeps it organic.
+fn wave_height(x: f32, z: f32, t: f32) -> f32 {
+    let w1 = (x * 0.20 + z * 0.13 - t * 0.70).sin() * 0.06;
+    let w2 = (x * 0.13 - z * 0.20 + t * 0.90).sin() * 0.05;
+    let w3 = (x * 0.07 + z * 0.07 - t * 0.40).sin() * 0.04;
+    let swell = (x * 0.04 - z * 0.05 + t * 0.25).sin() * 0.05;
+    w1 + w2 + w3 + swell
+}
+
 pub fn update_water_ripples(
     mut water: Query<(&GlobalTransform, &WaterRipple, &mut Transform), With<WaterTile>>,
     time: Res<Time>,
@@ -30,8 +41,6 @@ pub fn update_water_ripples(
             continue;
         }
         let pos = global_tf.translation();
-        let wave = (pos.x * 0.5 + pos.z * 0.3 + t * 1.2).sin() * 0.02
-            + (pos.x * 0.3 - pos.z * 0.7 + t * 1.8).sin() * 0.015;
-        transform.translation.y = ripple.base_y + wave;
+        transform.translation.y = ripple.base_y + wave_height(pos.x, pos.z, t);
     }
 }

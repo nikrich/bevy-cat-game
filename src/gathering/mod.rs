@@ -2,7 +2,8 @@ use bevy::prelude::*;
 
 use crate::crafting::CraftingState;
 use crate::input::GameInput;
-use crate::inventory::{Inventory, InventoryChanged, ItemKind};
+use crate::inventory::{Inventory, InventoryChanged};
+use crate::items::{Form, ItemId, ItemRegistry, Material};
 use crate::player::Player;
 use crate::world::props::{Prop, PropKind};
 
@@ -10,11 +11,10 @@ pub struct GatheringPlugin;
 
 impl Plugin for GatheringPlugin {
     fn build(&self, app: &mut App) {
-        app.add_event::<GatherEvent>()
-            .add_systems(
-                Update,
-                (detect_nearby_gatherables, gather_on_interact, animate_gathering),
-            );
+        app.add_event::<GatherEvent>().add_systems(
+            Update,
+            (detect_nearby_gatherables, gather_on_interact, animate_gathering),
+        );
     }
 }
 
@@ -24,38 +24,40 @@ const GATHER_RADIUS: f32 = 1.5;
 pub struct NearbyGatherable {
     pub entity: Entity,
     pub distance: f32,
-    pub item: ItemKind,
+    pub item: ItemId,
 }
 
 #[derive(Event)]
 pub struct GatherEvent {
     pub entity: Entity,
-    pub item: ItemKind,
+    pub item: ItemId,
 }
 
 #[derive(Component)]
 pub struct Gathering {
     pub timer: f32,
-    pub item: ItemKind,
+    pub item: ItemId,
 }
 
-fn prop_to_item(kind: &PropKind) -> Option<ItemKind> {
-    match kind {
-        PropKind::Tree => Some(ItemKind::Wood),
-        PropKind::PineTree => Some(ItemKind::PineWood),
-        PropKind::Bush => Some(ItemKind::Bush),
-        PropKind::Flower => Some(ItemKind::Flower),
-        PropKind::Mushroom => Some(ItemKind::Mushroom),
-        PropKind::Cactus => Some(ItemKind::Cactus),
-        PropKind::Rock | PropKind::Boulder => Some(ItemKind::Stone),
-        PropKind::DeadBush => Some(ItemKind::Wood),
-        PropKind::IceRock => Some(ItemKind::Stone),
-        PropKind::TundraGrass => None,
-    }
+fn prop_to_item(kind: &PropKind, registry: &ItemRegistry) -> Option<ItemId> {
+    let (form, material) = match kind {
+        PropKind::Tree => (Form::Log, Material::Oak),
+        PropKind::PineTree => (Form::Log, Material::Pine),
+        PropKind::Bush => (Form::BushSprig, Material::Bush),
+        PropKind::Flower => (Form::Flower, Material::FlowerMix),
+        PropKind::Mushroom => (Form::Mushroom, Material::Mushroom),
+        PropKind::Cactus => (Form::CactusFlesh, Material::Cactus),
+        PropKind::Rock | PropKind::Boulder => (Form::StoneChunk, Material::Stone),
+        PropKind::DeadBush => (Form::Log, Material::Oak),
+        PropKind::IceRock => (Form::StoneChunk, Material::Stone),
+        PropKind::TundraGrass => return None,
+    };
+    registry.lookup(form, material)
 }
 
 fn detect_nearby_gatherables(
     mut commands: Commands,
+    registry: Res<ItemRegistry>,
     player_query: Query<&GlobalTransform, With<Player>>,
     props: Query<(Entity, &GlobalTransform, &PropKind), (With<Prop>, Without<Gathering>)>,
 ) {
@@ -65,10 +67,12 @@ fn detect_nearby_gatherables(
     };
     let player_pos = player_gt.translation();
 
-    let mut closest: Option<(Entity, f32, ItemKind)> = None;
+    let mut closest: Option<(Entity, f32, ItemId)> = None;
 
     for (entity, gt, kind) in &props {
-        let Some(item) = prop_to_item(kind) else { continue };
+        let Some(item) = prop_to_item(kind, &registry) else {
+            continue;
+        };
 
         let pos = gt.translation();
         let dx = pos.x - player_pos.x;
@@ -104,7 +108,6 @@ fn gather_on_interact(
 ) {
     let Some(nearby) = nearby else { return };
 
-    // Don't gather when other menus are active
     if crafting.open || build_mode.is_some() {
         return;
     }

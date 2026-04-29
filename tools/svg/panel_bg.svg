@@ -1,0 +1,63 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512">
+  <defs>
+    <!-- Subtle vertical gradient. Both ends dark so the 9-slice center stays dark. -->
+    <linearGradient id="teal" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%"   stop-color="#163945" stop-opacity="0.96"/>
+      <stop offset="100%" stop-color="#0a242c" stop-opacity="0.97"/>
+    </linearGradient>
+    <linearGradient id="gold" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%"   stop-color="#f6e2a8"/>
+      <stop offset="50%"  stop-color="#d4a949"/>
+      <stop offset="100%" stop-color="#a47a2a"/>
+    </linearGradient>
+    <filter id="goldGlow" x="-30%" y="-30%" width="160%" height="160%">
+      <feGaussianBlur in="SourceGraphic" stdDeviation="3"/>
+    </filter>
+  </defs>
+
+  <!-- Outer soft gold halo (visible only at corners after 9-slice) -->
+  <rect x="6" y="6" width="500" height="500" rx="30" ry="30"
+        fill="none" stroke="#d4a949" stroke-opacity="0.22"
+        stroke-width="10" filter="url(#goldGlow)"/>
+
+  <!-- Painted teal body. Solid-ish dark fill. -->
+  <rect x="14" y="14" width="484" height="484" rx="24" ry="24"
+        fill="url(#teal)"/>
+
+  <!-- Gold border line -->
+  <rect x="18" y="18" width="476" height="476" rx="20" ry="20"
+        fill="none" stroke="url(#gold)" stroke-width="2.4"/>
+
+  <!-- Inner hairline -->
+  <rect x="24" y="24" width="464" height="464" rx="16" ry="16"
+        fill="none" stroke="#f6e2a8" stroke-width="0.6" stroke-opacity="0.30"/>
+
+  <!-- Corner ornaments. Larger and more legible than before. -->
+  <g stroke="url(#gold)" stroke-width="2.0" fill="none" stroke-linecap="round">
+    <!-- top-left -->
+    <path d="M 30 70 Q 30 30 70 30"/>
+    <path d="M 38 80 Q 40 38 80 38"/>
+    <path d="M 60 30 Q 76 30 84 50"/>
+    <!-- top-right -->
+    <path d="M 482 70 Q 482 30 442 30"/>
+    <path d="M 474 80 Q 472 38 432 38"/>
+    <path d="M 452 30 Q 436 30 428 50"/>
+    <!-- bottom-left -->
+    <path d="M 30 442 Q 30 482 70 482"/>
+    <path d="M 38 432 Q 40 474 80 474"/>
+    <path d="M 60 482 Q 76 482 84 462"/>
+    <!-- bottom-right -->
+    <path d="M 482 442 Q 482 482 442 482"/>
+    <path d="M 474 432 Q 472 474 432 474"/>
+    <path d="M 452 482 Q 436 482 428 462"/>
+  </g>
+
+  <!-- Tiny gold dots at each corner where curls converge -->
+  <g fill="#f6e2a8">
+    <circle cx="40" cy="40" r="1.6"/>
+    <circle cx="472" cy="40" r="1.6"/>
+    <circle cx="40" cy="472" r="1.6"/>
+    <circle cx="472" cy="472" r="1.6"/>
+  </g>
+</svg>
