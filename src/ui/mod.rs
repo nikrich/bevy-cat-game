@@ -11,18 +11,23 @@ use crate::gathering::NearbyGatherable;
 use crate::inventory::{Inventory, InventoryChanged};
 use crate::items::{ItemId, ItemRegistry, ItemTags};
 use chrome::{
-    body_text, button_image, load_ui_assets, panel_image, plain_image, slot_image, title_text,
+    body_text, button_image, panel_image, plain_image, slot_image, title_text,
     UiAssets, ACCENT_GOLD, NEED_RED, TEXT_BODY, TEXT_BODY_DIM, TEXT_DARK_INK, TEXT_FAINT,
     TEXT_GOLD, TEXT_GOLD_DIM,
 };
+
+use crate::state::GameState;
 
 pub struct GameUiPlugin;
 
 impl Plugin for GameUiPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(Startup, load_ui_assets)
-            // PostStartup so the item / recipe / placeable registries AND UiAssets are populated.
-            .add_systems(PostStartup, spawn_ui)
+        // Spawning waits for `OnEnter(GameState::Playing)` so that
+        // `UiAssets` (loaded by bevy_asset_loader during Loading) and the
+        // item/recipe/placeable registries (seeded at Startup) are both in
+        // place. Previously this ran at PostStartup, before any state machine
+        // existed.
+        app.add_systems(OnEnter(GameState::Playing), spawn_ui)
             .add_systems(
                 Update,
                 (
@@ -33,7 +38,8 @@ impl Plugin for GameUiPlugin {
                     handle_build_hotbar_clicks,
                     handle_inventory_placeable_clicks,
                     scroll_hovered_panels,
-                ),
+                )
+                    .run_if(in_state(GameState::Playing)),
             );
         // The crafting menu lives in egui now (W0.6). The Bevy UI tree is no
         // longer spawned (see `spawn_ui`) and the old `update_crafting_menu`

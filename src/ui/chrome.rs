@@ -6,46 +6,45 @@
 
 use bevy::prelude::*;
 use bevy::ui::widget::NodeImageMode;
+use bevy_asset_loader::asset_collection::AssetCollection;
 
-#[derive(Resource, Clone)]
+/// Eagerly-loaded UI chrome — fonts and the painted Kenney panels the HUD
+/// builds on. W0.9 wires this through `bevy_asset_loader`'s `LoadingState`
+/// so the resource is materialised before `OnEnter(GameState::Playing)`.
+/// Per-prop glTFs continue to load lazily as chunks stream; only the small,
+/// always-needed UI set is gated through the loading screen.
+#[derive(AssetCollection, Resource, Clone)]
 pub struct UiAssets {
     /// 128x128 painted parchment with carved-corner ornaments. The main panel chrome.
+    #[asset(path = "ui/kenney/panel_brown_corners_a.png")]
     pub panel_bg: Handle<Image>,
     /// 128x128 darker brown panel, used for inset / nested surfaces (slot frames).
+    #[asset(path = "ui/kenney/panel_brown_dark.png")]
     pub panel_dark: Handle<Image>,
     /// 96x48 brown button with subtle bevel. 9-sliced for tab + status pills.
+    #[asset(path = "ui/kenney/button_brown.png")]
     pub button: Handle<Image>,
     /// 512x128 hanging banner with rope; sits on top of the panel as the title plate.
+    #[asset(path = "ui/kenney/banner_hanging.png")]
     pub banner: Handle<Image>,
     /// 32x128 scroll-bar track; rendered vertically alongside scroll containers.
+    #[asset(path = "ui/kenney/scrollbar_brown.png")]
     pub scrollbar: Handle<Image>,
     /// 96x128 brown hexagon, used as a number badge.
+    #[asset(path = "ui/kenney/hexagon_brown.png")]
     pub hexagon: Handle<Image>,
 
     /// Hand-authored gold flourish curl that sits above the bottom hint line.
+    #[asset(path = "ui/flourish.png")]
     pub flourish: Handle<Image>,
     /// Hand-authored gold gradient divider.
+    #[asset(path = "ui/divider.png")]
     pub divider: Handle<Image>,
 
+    #[asset(path = "fonts/Cinzel.ttf")]
     pub title_font: Handle<Font>,
+    #[asset(path = "fonts/Nunito.ttf")]
     pub body_font: Handle<Font>,
-}
-
-pub fn load_ui_assets(mut commands: Commands, asset_server: Res<AssetServer>) {
-    commands.insert_resource(UiAssets {
-        panel_bg: asset_server.load("ui/kenney/panel_brown_corners_a.png"),
-        panel_dark: asset_server.load("ui/kenney/panel_brown_dark.png"),
-        button: asset_server.load("ui/kenney/button_brown.png"),
-        banner: asset_server.load("ui/kenney/banner_hanging.png"),
-        scrollbar: asset_server.load("ui/kenney/scrollbar_brown.png"),
-        hexagon: asset_server.load("ui/kenney/hexagon_brown.png"),
-
-        flourish: asset_server.load("ui/flourish.png"),
-        divider: asset_server.load("ui/divider.png"),
-
-        title_font: asset_server.load("fonts/Cinzel.ttf"),
-        body_font: asset_server.load("fonts/Nunito.ttf"),
-    });
 }
 
 // --- Palette (dark ink on parchment) -------------------------------------

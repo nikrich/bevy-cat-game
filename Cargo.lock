@@ -526,6 +526,36 @@ dependencies = [
 ]
 
 [[package]]
+name = "bevy_asset_loader"
+version = "0.26.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a44eda0020550e0285223cbc0643398e0f4358e3e614e8b00230ee81618d184e"
+dependencies = [
+ "anyhow",
+ "bevy_app",
+ "bevy_asset",
+ "bevy_asset_loader_derive",
+ "bevy_ecs",
+ "bevy_log",
+ "bevy_platform",
+ "bevy_reflect",
+ "bevy_state",
+ "bevy_utils",
+ "path-slash",
+]
+
+[[package]]
+name = "bevy_asset_loader_derive"
+version = "0.26.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "12358b7aa33a70b4b49b4e78b7a084546ab7805fb17e4a23e788270244da604d"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn",
+]
+
+[[package]]
 name = "bevy_asset_macros"
 version = "0.18.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -586,6 +616,7 @@ name = "bevy_cat_game"
 version = "0.1.0"
 dependencies = [
  "bevy",
+ "bevy_asset_loader",
  "bevy_egui",
  "directories",
  "leafwing-input-manager",
@@ -4267,6 +4298,12 @@ name = "paste"
 version = "1.0.15"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "57c0d7b74b563b49d38dae00a0c37d4d6de9b432382b2892f0574ddcae73fd0a"
+
+[[package]]
+name = "path-slash"
+version = "0.2.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1e91099d4268b0e11973f036e885d652fb0b21fedcf69738c627f94db6a44f42"
 
 [[package]]
 name = "percent-encoding"
