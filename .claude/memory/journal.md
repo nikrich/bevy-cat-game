@@ -1,5 +1,46 @@
 # Session Journal
 
+## 2026-04-29 -- Phase 1 underway: vertex grid + cuboid mesh + brushes + persistence + auto-flatten
+
+**What was done:**
+- W1.1 / W1.2 / W1.5 / W1.6 / W1.7 / W1.8 / W1.9 — foundation slice. Replaced the per-tile cuboid entity model with a 33×33 vertex height grid per chunk, rendered as a stepped-block mesh (one flat top quad per cell + vertical riser quads on each side where the neighbour is shorter, taller cell owns the riser), backed by a rapier `Collider::trimesh` built from the same vert/index buffers. Per-cell biome tint with a small position-derived shade variation. Chunk size 16 → 32 cells, render distance 3 → 2. Closes DEBT-007 + DEBT-008. DEC-017 + DEC-018 record the data-vs-render split (vertex grid is the source of truth for brushes/save/navmesh; mesh builder emits cuboid topology to keep the chunky look)
+- Migrations: `props`, `animals`, `building` preview, `water`, `tile_tint` all read `Terrain::height_at_or_sample` (or are stubbed under debt). Water became one alpha-blended plane per chunk at sea level; ocean cells get pulled to a wading floor (`WATER_FLOOR_Y = -1.30`) so the cat physically sinks in. `tile_tint` parked under DEBT-018 (per-cell warmth glow needs vertex-color reimpl); per-tile water swell parked under DEBT-019
+- W1.10 (partial) terrain brushes: `T` toggles edit mode (gated against build mode + crafting), `1/2/3` select Raise / Lower / Flatten, LMB-held paints at the cursor on a 100 ms tick (one 0.25 m step per tick), mouse wheel adjusts radius 1–8 m, gizmo ring shows the brush footprint. Falloff is hard-core + edge fade (~70% radius full force, outer 30% smoothsteps) so Flatten produces a clearly flat plateau. Flatten target is captured on LMB-press so a sweep doesn't drift the anchor
+- W1.15 save persistence: `Terrain` gains a persistent `edits: HashMap<ChunkCoord, HashMap<(u8,u8), f32>>` overlay. `set_vertex_height` records each brush write there in addition to mutating the live chunk; `generate_chunk` re-applies edits after PCG when the chunk re-loads. Save format extends with a flat `terrain_edits: Vec<ChunkEditsSave>` field, `#[serde(default)]` so existing saves still load. Empty maps are skipped on save → unedited worlds add nothing to disk
+- W1.11 auto-flatten footprint API: `Terrain::flatten_rect(min_x, min_z, max_x, max_z, skirt_width, noise)` snaps every vertex inside the footprint to the median ground height under it, then blends a smoothstep skirt outward by `skirt_width` tiles using Chebyshev distance. Wired to a debug `F` hotkey (4×4 footprint, 2-tile skirt) in edit mode; Phase 2 building placement will swap the hotkey for a real footprint read off the placed piece
+
+**Deferred / not started in this session:**
+- W1.10 Smooth + Paint brushes (next slice)
+- W1.14 brush hotbar UI (egui readout of active brush + radius)
+- W1.3 slope/rock material override on risers — *skipped per art direction*: the user explicitly wants tile sides to read as the same colour as the top, so painting risers as rock contradicts the look they signed off on. DEC-018 captures this
+- W1.4 vertex tint atlas — partial: per-cell biome tint with shade variation already ships; the full atlas (one texture tile per biome on the top face) is a follow-up
+- W1.12 / W1.13 navmesh + override — heavy lift, not started, no immediate visible payoff before Phase 5 NPC cats
+- Spec amendment to W1.4 wording ("smooth blending" → "tile-aligned biome edges") still pending in spec/phases/02-terrain.md
+
+**Decisions recorded:** DEC-017 (vertex-height grid replaces per-tile cuboids), DEC-018 (one stepped-block mesh + trimesh collider per chunk; collider lives on the chunk entity itself, no child)
+
+**Tech debt closed:** DEBT-007 (per-tile entities), DEBT-008 (material/mesh duplication). Opened: DEBT-018 (warm-cell tile tint disabled by terrain rewrite), DEBT-019 (per-tile water swell parked by water-mesh-per-chunk migration)
+
+**Files created:** `src/world/edit.rs`
+
+**Files heavily modified:** `src/world/terrain.rs` (full rewrite — `Terrain` resource, vertex grid, stepped-block mesh builder, trimesh collider, edits overlay, brush APIs, `flatten_rect`), `src/world/chunks.rs` (lifecycle systems hand the resource), `src/world/water.rs` (per-chunk plane), `src/world/props.rs` / `src/animals/mod.rs` / `src/building/mod.rs` (height_at_or_sample), `src/world/mod.rs` (chained chunk lifecycle to cover load → unload → regen → water → props), `src/save.rs` (terrain_edits round-trip), `src/input/mod.rs` (Action::ToggleEditTerrain), `src/memory/tile_tint.rs` (stub)
+
+**Surprising things:**
+- Heightfield collider can't represent vertical risers — for the cuboid look, the cat physically *needs* trimesh collision so it has to jump up step risers (matches what it sees). Trimesh is heavier per chunk (~2-8k tris) but BVH build stays fast in release; debug build was where the freeze showed up
+- `Collider::trimesh_with_flags(verts, tris, TriMeshFlags::all())` was a freeze trap: pseudo-normals + duplicate-vertex merging + topology graph + degenerate-triangle filtering all run on every brush regen. ~10–100 ms per chunk in debug, enough to lock the schedule when several chunks regen on the same frame. Plain `Collider::trimesh(verts, tris)` is dramatically faster and the preprocessing is redundant for our hand-built meshes
+- Riser triangle winding has to flip per face — passing corners in the same NW/NE/SW/SE convention the helper uses for top quads gave the wrong cross-product direction for risers, so backface culling hid them. The visible symptom was "sides missing"; the diagnostic was that geometric and declared normals disagreed
+- Even with the chunk-lifecycle `.chain()` covering load → unload → regen, `spawn_chunk_water` and `spawn_chunk_props` were still racing: they parent themselves to the chunk entity, and if Bevy scheduled them in parallel with `load_nearby_chunks`, the props' `add_child` could apply before the chunk-entity spawn command. Extending the chain to cover both consumers is the fix
+- The cuboid topology choice has nice cascading wins downstream: W1.3 slope shader becomes binary (always 0° or 90°) — could even be replaced by two materials. W1.12 navmesh boundaries become cell-aligned. Auto-flatten footprints look clean as defined "building pads"
+- The rounded-stepped-grid (heights are stored continuous f32 but the mesh emits per-cell flat tops so the visual stays chunky regardless) means brushes can use continuous deltas without breaking the look — no per-vertex accumulator needed
+- "Same colour all over" with Lambertian shading: the user wanted tile sides to *read* as the same biome colour as the top. First attempt set all riser normals to +Y (so the sun lit them identically); user rejected — "looks weird". Reverting to true side-facing normals gave proper depth shading while keeping the colour identical, which is what they wanted
+
+**Open threads:**
+- W1.10 Smooth + Paint brushes — Smooth nudges step-jumps toward neighbours' average; Paint cycles biome IDs (which would also need to drive prop respawn and per-chunk regen)
+- W1.14 brush hotbar UI — egui readout
+- W1.3 / W1.4 polish — atlas + (skipped) rock-on-riser shader
+- W1.12 / W1.13 navmesh — bigger lift, save for when NPC cats need it
+- Spec amendment to `spec/phases/02-terrain.md` W1.4 wording
+
 ## 2026-04-29 -- Phase 0 closed (12 shipped + 2 accepted deferrals)
 
 **What was done:**
