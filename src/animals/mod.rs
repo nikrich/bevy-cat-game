@@ -3,7 +3,7 @@ use rand::prelude::*;
 
 use crate::player::Player;
 use crate::world::biome::{Biome, WorldNoise};
-use crate::world::chunks::{ChunkLoaded, ChunkManager, CHUNK_SIZE};
+use crate::world::chunks::{ChunkLoaded, CHUNK_SIZE};
 use crate::world::terrain::step_height;
 
 pub struct AnimalPlugin;
@@ -83,10 +83,9 @@ fn spawn_animals(
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
-    mut chunk_events: EventReader<ChunkLoaded>,
-    chunk_manager: Res<ChunkManager>,
+    mut chunk_events: MessageReader<ChunkLoaded>,
+    noise: Res<WorldNoise>,
 ) {
-    let noise = WorldNoise::new(chunk_manager.seed);
     let mut rng = rand::thread_rng();
 
     for event in chunk_events.read() {
@@ -144,11 +143,10 @@ fn spawn_animals(
 
 fn wander_animals(
     mut animals: Query<(&mut Animal, &mut Transform), Without<Fleeing>>,
-    chunk_manager: Res<ChunkManager>,
+    noise: Res<WorldNoise>,
     time: Res<Time>,
 ) {
     let dt = time.delta_secs();
-    let noise = WorldNoise::new(chunk_manager.seed);
     let mut rng = rand::thread_rng();
 
     for (mut animal, mut transform) in &mut animals {
@@ -185,13 +183,12 @@ fn flee_from_player(
     mut commands: Commands,
     player_query: Query<&GlobalTransform, With<Player>>,
     mut animals: Query<(Entity, &Animal, &GlobalTransform, &mut Transform, Option<&mut Fleeing>)>,
-    chunk_manager: Res<ChunkManager>,
+    noise: Res<WorldNoise>,
     time: Res<Time>,
 ) {
     let Ok(player_gt) = player_query.single() else { return };
     let player_pos = player_gt.translation();
     let dt = time.delta_secs();
-    let noise = WorldNoise::new(chunk_manager.seed);
     let flee_radius = 4.0;
 
     for (entity, animal, global_tf, mut transform, fleeing) in &mut animals {

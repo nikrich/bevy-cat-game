@@ -5,7 +5,7 @@ pub mod props;
 pub mod terrain;
 pub mod water;
 
-use bevy::pbr::CascadeShadowConfigBuilder;
+use bevy::light::CascadeShadowConfigBuilder;
 use bevy::prelude::*;
 
 pub struct WorldPlugin;
@@ -13,8 +13,9 @@ pub struct WorldPlugin;
 impl Plugin for WorldPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<chunks::ChunkManager>()
+            .init_resource::<biome::WorldNoise>()
             .init_resource::<daynight::WorldTime>()
-            .add_event::<chunks::ChunkLoaded>()
+            .add_message::<chunks::ChunkLoaded>()
             .add_systems(Startup, spawn_light)
             .add_systems(
                 Update,

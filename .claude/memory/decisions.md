@@ -80,6 +80,37 @@
 - **Alternatives**: Keep manual parser (breaks under registry), bincode (compact but unreadable), RON (Rust-native but extra dep with no human-readable advantage over JSON)
 - **Consequences**: One added dependency. ~50 lines of save.rs become a few derive macros. DEBT-009 closes when migration lands
 
+## DEC-013: Bevy 0.18 + ecosystem crate stack (Phase 0)
+- **Date**: 2026-04-29
+- **Status**: Accepted (atmosphere clause amended 2026-04-29)
+- **Context**: Building Phase 0 (foundations) on top of Bevy 0.16 with hand-rolled abstractions would force every later phase to refactor as it grew. The spec mandates the crates the wider Bevy ecosystem has standardised on
+- **Decision**: Bump Bevy 0.16 → 0.18.1. Adopt the official ecosystem stack: `bevy_rapier3d` (physics), `bevy_tnua` (character controller), `leafwing-input-manager` (input), `bevy_egui` (immediate UI), `bevy_asset_loader` (asset gating), `moonshine-save` (reflection-based save/load). **Atmosphere/sky stays on the hand-tuned `daynight.rs` ClearColor gradient** — the Bevy 0.18 first-party procedural atmosphere was trialled and reverted because its Earth-scale lighting model (lux::RAW_SUNLIGHT, km-scale scenes, HDR + AcesFitted + Bloom) produced a visibly harsher look than the warm pastel low-poly palette the game is built on. `bevy_atmosphere` (the third-party crate) is also not adopted — stuck on 0.16 per the 2026-04-29 audit
+- **Alternatives**: Stay on 0.16 (defers pain to Phase 1+). Skip individual crates (loses ecosystem integration). Adopt bevy_atmosphere (non-starter on 0.18). Tune the first-party atmosphere into a soft palette (possible but every dial fights the model's intent)
+- **Consequences**: Phase 0 is one focused refactor in exchange for stable infrastructure across phases 1-7. Atmosphere is parked: the manual sky-color gradient stays, and a custom shader skybox is the right path if a future phase decides "no manual ClearColor" matters more than the current look. Breaks DEC-007 (input) and DEC-011 (save); both superseded below
+
+## DEC-014: Game state machine (Loading / MainMenu / Playing / Paused, with Building sub-state)
+- **Date**: 2026-04-29
+- **Status**: Accepted
+- **Context**: No state machine meant the game booted straight into gameplay (DEBT-003 / DEBT-011). Pause, main menu, loading screens, and build-mode scoping all need a state to scope on/off entities and run conditions
+- **Decision**: `GameState`: Loading → MainMenu → Playing → Paused. `BuildState`: Idle / Building, sub-state of Playing. Esc toggles Playing↔Paused; pausing freezes `Time<Virtual>` so every consumer of `Res<Time>` halts without per-system gating. Until W0.6 + W0.9 land (egui menu + asset_loader Loading screen) the Loading state immediately auto-transitions to Playing so the structure is in place without a real boot screen
+- **Alternatives**: Tag every gameplay system with `in_state(Playing)` (works but fragile, easy to forget on new systems). Pause via `App::set_runner` swap (heavier, less idiomatic). Defer to a later phase (every later phase needs the partition)
+- **Consequences**: Closes DEBT-003 and DEBT-011. The placeholder Loading→Playing transition is owned by `state.rs::bootstrap_into_playing` and goes away when W0.9 wires real asset gating. Esc-as-pause cohabits with Esc-as-cancel-build / Esc-as-close-craft — pause is suppressed when build mode or crafting menu is active
+
+## DEC-015: Moonshine-save with reflection-based persistence
+- **Date**: 2026-04-29
+- **Status**: Accepted (supersedes DEC-011)
+- **Context**: DEC-011 adopted serde + serde_json with hand-maintained SaveData structs. As Phase 0+ adds physics state, NPC state, role state, and festival state, hand-mirroring every component into a save struct doesn't scale
+- **Decision**: Migrate to `moonshine-save` for save/load. Persistable components are tagged with `#[reflect(...)]` and the `Save` marker; loaded components are restored via reflection. On-disk format remains JSON for human readability and dirt-simple debug inspection
+- **Alternatives**: Stay on hand-maintained SaveData (forces a sync pass every time a new persistable component lands). Bevy's built-in scene format (less control over what's persisted, more verbose on disk)
+- **Consequences**: New persistable components need only `#[derive(Reflect)] #[reflect(Save)]` to participate in save/load — no save struct edits. Closes the old "save struct grew" pain. Future phases can add components to NPCs, buildings, etc. without touching save.rs
+
+## DEC-016: 24-minute day cycle (supersedes DEC-006)
+- **Date**: 2026-04-29
+- **Status**: Accepted (supersedes DEC-006)
+- **Context**: DEC-006 picked 12-min day. Per design call: 24 in-game hours = 24 real minutes (1 in-game hour per real minute) feels more like a session-friendly Stardew/Animal-Crossing pace than the previous 30-second hour
+- **Decision**: `WorldTime.speed` drops from 2.0 to 1.0 (1 real minute = 1 in-game hour). Phase boundaries (dawn 5-7, morning 7-9, day 9-16, dusk 16-18, twilight 18-20, night 20-5) unchanged
+- **Consequences**: Players see ~one full cycle per ~24-minute session instead of two. Transitions feel less hectic; a full day arc maps to a typical "evening of play". DEC-006 retired
+
 ## DEC-009: Temperature/moisture biome classification
 - **Date**: 2026-04-29
 - **Status**: Accepted

@@ -35,6 +35,11 @@ pub struct WorldSample {
 }
 
 /// All noise generators for the world, derived from a single seed.
+///
+/// Stored as a `Resource` (built once at startup from `ChunkManager.seed`) so
+/// per-frame systems can borrow it instead of rebuilding all six Perlin
+/// generators every tick. Closes DEBT-012.
+#[derive(Resource)]
 pub struct WorldNoise {
     pub elevation: Perlin,
     pub temperature: Perlin,
@@ -42,6 +47,16 @@ pub struct WorldNoise {
     pub river: Perlin,
     pub river_warp: Perlin,
     pub mountain: Perlin,
+}
+
+impl FromWorld for WorldNoise {
+    fn from_world(world: &mut World) -> Self {
+        let seed = world
+            .get_resource::<crate::world::chunks::ChunkManager>()
+            .map(|m| m.seed)
+            .unwrap_or(0);
+        Self::new(seed)
+    }
 }
 
 impl WorldNoise {

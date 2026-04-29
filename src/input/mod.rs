@@ -22,7 +22,7 @@ impl Plugin for InputPlugin {
                 PreUpdate,
                 resolve_world_click
                     .after(compute_cursor_world)
-                    .after(bevy::ui::UiSystem::Focus),
+                    .after(bevy::ui::UiSystems::Focus),
             );
     }
 }

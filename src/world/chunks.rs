@@ -30,7 +30,7 @@ impl Default for ChunkManager {
     }
 }
 
-#[derive(Event)]
+#[derive(Message)]
 pub struct ChunkLoaded {
     pub x: i32,
     pub z: i32,
@@ -53,10 +53,10 @@ pub fn load_nearby_chunks(
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
     mut chunk_manager: ResMut<ChunkManager>,
-    mut chunk_events: EventWriter<ChunkLoaded>,
+    noise: Res<crate::world::biome::WorldNoise>,
+    mut chunk_events: MessageWriter<ChunkLoaded>,
 ) {
     let (cx, cz) = chunk_manager.player_chunk;
-    let seed = chunk_manager.seed;
 
     let mut to_load = Vec::new();
 
@@ -75,9 +75,9 @@ pub fn load_nearby_chunks(
             &mut commands,
             &mut meshes,
             &mut materials,
+            &noise,
             coord.0,
             coord.1,
-            seed,
         );
 
         chunk_manager.loaded.insert(coord, entity);

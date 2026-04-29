@@ -1,4 +1,5 @@
 use bevy::prelude::*;
+use directories::BaseDirs;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs;
@@ -9,6 +10,7 @@ use crate::inventory::{Inventory, InventoryChanged};
 use crate::items::ItemRegistry;
 use crate::memory::{CellMemory, Journal, JournalEntry, WorldMemory};
 use crate::player::Player;
+use crate::world::chunks::ChunkManager;
 
 pub struct SavePlugin;
 
@@ -37,9 +39,34 @@ impl Default for SaveTimer {
 }
 
 const SAVE_FILE: &str = "savegame.json";
+const APP_DIR_NAME: &str = "Cat World";
+
+/// Resolve the save directory. Steam Cloud syncs the platform-standard
+/// per-user data dir, so we land there by default and let `--save-dir <path>`
+/// override for tests / portable builds. macOS picks
+/// `~/Library/Application Support/Cat World/`, Linux picks
+/// `$XDG_DATA_HOME/Cat World/`, Windows picks
+/// `%APPDATA%/Cat World/` — all writable locations Steam Cloud is happy with
+/// (W0.12 / DEC-013).
+fn save_dir() -> PathBuf {
+    let mut args = std::env::args();
+    while let Some(arg) = args.next() {
+        if arg == "--save-dir" {
+            if let Some(path) = args.next() {
+                return PathBuf::from(path);
+            }
+        } else if let Some(path) = arg.strip_prefix("--save-dir=") {
+            return PathBuf::from(path);
+        }
+    }
+    if let Some(base) = BaseDirs::new() {
+        return base.data_dir().join(APP_DIR_NAME);
+    }
+    PathBuf::from(".")
+}
 
 fn save_path() -> PathBuf {
-    PathBuf::from(SAVE_FILE)
+    save_dir().join(SAVE_FILE)
 }
 
 #[derive(Serialize, Deserialize)]
@@ -48,6 +75,11 @@ struct SaveData {
     /// Keys are item save_keys (e.g. "plank.oak", "log.pine").
     inventory: HashMap<String, u32>,
     buildings: Vec<BuildingSave>,
+    /// World seed becomes part of the save in W0.13 (closes DEBT-004). Older
+    /// saves without a seed default to the previous hardcoded value via
+    /// `serde(default)` so they keep loading into the same world.
+    #[serde(default = "default_seed")]
+    seed: u32,
     /// Phase A substrate. Optional with `#[serde(default)]` so saves predating
     /// Phase A still load cleanly.
     #[serde(default)]
@@ -56,6 +88,10 @@ struct SaveData {
     journal: Vec<JournalEntry>,
     #[serde(default)]
     journal_next_id: u32,
+}
+
+fn default_seed() -> u32 {
+    7
 }
 
 #[derive(Serialize, Deserialize)]
@@ -81,40 +117,6 @@ struct CellMemoryEntry {
 #[derive(Resource)]
 pub struct LoadedPlayerPos(pub Vec3);
 
-/// Translate the pre-registry ItemKind variant names ("Wood", "Plank", etc.)
-/// to the new save_key scheme. Returns None for unknown legacy names.
-fn legacy_item_to_save_key(legacy: &str) -> Option<&'static str> {
-    Some(match legacy {
-        "Wood" => "log.oak",
-        "PineWood" => "log.pine",
-        "Stone" => "stone.stone",
-        "Flower" => "flower.flower",
-        "Mushroom" => "mushroom.mushroom",
-        "Bush" => "bush.bush",
-        "Cactus" => "cactus.cactus",
-        "Plank" => "plank.oak",
-        "StoneBrick" => "brick.stone",
-        "Fence" => "fence.oak",
-        "Bench" => "bench.oak",
-        "Lantern" => "lantern.stone",
-        "FlowerPot" => "flowerpot.stone",
-        "Stew" => "stew.none",
-        "Wreath" => "wreath.none",
-        _ => return None,
-    })
-}
-
-/// Returns the canonical save_key for whatever the file key was -- either
-/// already a registry save_key, or a legacy ItemKind variant name we still
-/// understand.
-fn canonical_save_key(raw: &str) -> Option<String> {
-    if raw.contains('.') {
-        Some(raw.to_string())
-    } else {
-        legacy_item_to_save_key(raw).map(|s| s.to_string())
-    }
-}
-
 fn auto_save(
     mut save_timer: ResMut<SaveTimer>,
     time: Res<Time>,
@@ -122,6 +124,7 @@ fn auto_save(
     registry: Res<ItemRegistry>,
     world_memory: Res<WorldMemory>,
     journal: Res<Journal>,
+    chunks: Res<ChunkManager>,
     player_query: Query<&Transform, With<Player>>,
     buildings: Query<(&PlacedBuilding, &Transform)>,
     input: Res<crate::input::GameInput>,
@@ -177,17 +180,26 @@ fn auto_save(
         ],
         inventory: inv_map,
         buildings: buildings_vec,
+        seed: chunks.seed,
         world_memory: world_memory_vec,
         journal: journal.entries.clone(),
         journal_next_id: journal.next_id,
     };
 
+    let path = save_path();
+    if let Some(parent) = path.parent() {
+        if let Err(e) = fs::create_dir_all(parent) {
+            warn!("Failed to create save dir {}: {}", parent.display(), e);
+            return;
+        }
+    }
+
     match serde_json::to_string_pretty(&data) {
         Ok(json) => {
-            if let Err(e) = fs::write(save_path(), json) {
-                warn!("Failed to save: {}", e);
+            if let Err(e) = fs::write(&path, json) {
+                warn!("Failed to save to {}: {}", path.display(), e);
             } else if manual_save {
-                info!("Game saved!");
+                info!("Game saved to {}", path.display());
             }
         }
         Err(e) => warn!("Save serialization failed: {}", e),
@@ -198,10 +210,11 @@ fn load_game(
     mut commands: Commands,
     registry: Res<ItemRegistry>,
     asset_server: Res<AssetServer>,
+    mut chunks: ResMut<ChunkManager>,
     mut inventory: ResMut<Inventory>,
     mut world_memory: ResMut<WorldMemory>,
     mut journal: ResMut<Journal>,
-    mut inv_events: EventWriter<InventoryChanged>,
+    mut inv_events: MessageWriter<InventoryChanged>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
 ) {
@@ -222,6 +235,7 @@ fn load_game(
     };
 
     commands.insert_resource(LoadedPlayerPos(Vec3::from(save.player)));
+    chunks.seed = save.seed;
 
     // Phase A substrate restore.
     for entry in save.world_memory {
@@ -232,14 +246,10 @@ fn load_game(
     journal.entries = save.journal;
     journal.next_id = save.journal_next_id;
 
-    for (raw_key, count) in save.inventory {
+    for (key, count) in save.inventory {
         if count == 0 {
             continue;
         }
-        let Some(key) = canonical_save_key(&raw_key) else {
-            warn!("Unknown inventory key in save: {raw_key}");
-            continue;
-        };
         let Some(id) = registry.lookup_save_key(&key) else {
             warn!("Inventory key not in registry: {key}");
             continue;
@@ -249,12 +259,8 @@ fn load_game(
     }
 
     for b in save.buildings {
-        let Some(key) = canonical_save_key(&b.item) else {
-            warn!("Unknown building key in save: {}", b.item);
-            continue;
-        };
-        let Some(id) = registry.lookup_save_key(&key) else {
-            warn!("Building key not in registry: {key}");
+        let Some(id) = registry.lookup_save_key(&b.item) else {
+            warn!("Building key not in registry: {}", b.item);
             continue;
         };
         spawn_placed_building(

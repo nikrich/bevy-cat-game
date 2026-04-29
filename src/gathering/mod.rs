@@ -11,7 +11,7 @@ pub struct GatheringPlugin;
 
 impl Plugin for GatheringPlugin {
     fn build(&self, app: &mut App) {
-        app.add_event::<GatherEvent>().add_systems(
+        app.add_message::<GatherEvent>().add_systems(
             Update,
             (detect_nearby_gatherables, gather_on_interact, animate_gathering),
         );
@@ -27,7 +27,7 @@ pub struct NearbyGatherable {
     pub item: ItemId,
 }
 
-#[derive(Event)]
+#[derive(Message)]
 pub struct GatherEvent {
     pub entity: Entity,
     pub item: ItemId,
@@ -103,8 +103,8 @@ fn gather_on_interact(
     crafting: Res<CraftingState>,
     build_mode: Option<Res<crate::building::BuildMode>>,
     mut inventory: ResMut<Inventory>,
-    mut inv_events: EventWriter<InventoryChanged>,
-    mut gather_events: EventWriter<GatherEvent>,
+    mut inv_events: MessageWriter<InventoryChanged>,
+    mut gather_events: MessageWriter<GatherEvent>,
 ) {
     let Some(nearby) = nearby else { return };
 

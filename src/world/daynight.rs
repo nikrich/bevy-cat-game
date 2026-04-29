@@ -14,7 +14,7 @@ impl Default for WorldTime {
     fn default() -> Self {
         Self {
             time_of_day: 8.0, // Start at morning
-            speed: 2.0,       // 1 real minute = 2 in-game hours -> full day in 12 minutes
+            speed: 1.0,       // 1 real minute = 1 in-game hour -> full day in 24 minutes
         }
     }
 }
@@ -128,7 +128,7 @@ pub fn update_sky_color(world_time: Res<WorldTime>, mut clear_color: ResMut<Clea
     clear_color.0 = sky;
 }
 
-pub fn update_ambient_light(world_time: Res<WorldTime>, mut ambient: ResMut<AmbientLight>) {
+pub fn update_ambient_light(world_time: Res<WorldTime>, mut ambient: ResMut<GlobalAmbientLight>) {
     let t = world_time.time_of_day;
 
     let (intensity, color) = if !(5.0..=20.0).contains(&t) {

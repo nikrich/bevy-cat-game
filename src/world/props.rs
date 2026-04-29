@@ -270,19 +270,18 @@ impl PropAssets {
 pub fn spawn_chunk_props(
     mut commands: Commands,
     asset_server: Res<AssetServer>,
-    chunk_manager: Res<crate::world::chunks::ChunkManager>,
+    noise: Res<WorldNoise>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
-    mut chunk_events: EventReader<ChunkLoaded>,
+    mut chunk_events: MessageReader<ChunkLoaded>,
 ) {
     let events: Vec<_> = chunk_events.read().collect();
     if events.is_empty() {
         return;
     }
 
-    let noise = WorldNoise::new(chunk_manager.seed);
-    let prop_noise = noise.moisture; // reuse for prop placement
-    let variety_noise = noise.temperature; // reuse for variety
+    let prop_noise = &noise.moisture; // reuse for prop placement
+    let variety_noise = &noise.temperature; // reuse for variety
     let assets = PropAssets::new(&mut meshes, &mut materials);
 
     for event in &events {

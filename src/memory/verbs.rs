@@ -12,7 +12,6 @@ use crate::input::GameInput;
 use crate::items::ItemRegistry;
 use crate::player::Player;
 use crate::world::biome::{Biome, WorldNoise};
-use crate::world::chunks::ChunkManager;
 use crate::world::props::{PropCollision, PropKind};
 
 use super::{world_to_cell, Journal, JournalKind, WorldMemory};
@@ -58,7 +57,7 @@ fn nap_system(
     mut state: ResMut<CatVerbState>,
     mut memory: ResMut<WorldMemory>,
     mut journal: ResMut<Journal>,
-    chunks: Res<ChunkManager>,
+    noise: Res<WorldNoise>,
     player_q: Query<&Transform, With<Player>>,
 ) {
     let Ok(tf) = player_q.single() else { return };
@@ -91,7 +90,6 @@ fn nap_system(
     entry.slept_here = entry.slept_here.saturating_add(1);
     entry.warmth = (entry.warmth + 0.25).min(1.0);
 
-    let noise = WorldNoise::new(chunks.seed);
     let biome = noise
         .sample(tf.translation.x as f64, tf.translation.z as f64)
         .biome;
@@ -106,7 +104,7 @@ fn examine_system(
     crafting: Res<CraftingState>,
     mut memory: ResMut<WorldMemory>,
     mut journal: ResMut<Journal>,
-    chunks: Res<ChunkManager>,
+    noise: Res<WorldNoise>,
     registry: Res<ItemRegistry>,
     player_q: Query<&Transform, With<Player>>,
     props: Query<(&GlobalTransform, &PropCollision, &PropKind)>,
@@ -172,7 +170,6 @@ fn examine_system(
     let body = if let Some((_, label)) = best {
         format!("Looked closely at the {label}.")
     } else {
-        let noise = WorldNoise::new(chunks.seed);
         let biome = noise
             .sample(player_pos.x as f64, player_pos.z as f64)
             .biome;

@@ -3,7 +3,6 @@ use rand::prelude::*;
 
 use crate::player::Player;
 use crate::world::biome::{Biome, WorldNoise};
-use crate::world::chunks::ChunkManager;
 use crate::world::daynight::WorldTime;
 
 pub struct ParticlePlugin;
@@ -40,7 +39,7 @@ fn spawn_particles(
     mut materials: ResMut<Assets<StandardMaterial>>,
     player_query: Query<&GlobalTransform, With<Player>>,
     particle_query: Query<&Particle>,
-    chunk_manager: Res<ChunkManager>,
+    noise: Res<WorldNoise>,
     world_time: Res<WorldTime>,
     time: Res<Time>,
     mut timer: Local<f32>,
@@ -58,7 +57,6 @@ fn spawn_particles(
     let Ok(player_gt) = player_query.single() else { return };
     let player_pos = player_gt.translation();
 
-    let noise = WorldNoise::new(chunk_manager.seed);
     let mut rng = rand::thread_rng();
 
     // Sample biome at a random position near player

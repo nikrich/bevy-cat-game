@@ -23,12 +23,10 @@ pub fn spawn_chunk_terrain(
     commands: &mut Commands,
     meshes: &mut ResMut<Assets<Mesh>>,
     materials: &mut ResMut<Assets<StandardMaterial>>,
+    noise: &WorldNoise,
     chunk_x: i32,
     chunk_z: i32,
-    seed: u32,
 ) -> Entity {
-    let noise = WorldNoise::new(seed);
-
     let tile_mesh = meshes.add(Mesh::from(Cuboid::new(TILE_SIZE, 0.6, TILE_SIZE)));
     let water_mesh = meshes.add(Mesh::from(Cuboid::new(TILE_SIZE, 0.4, TILE_SIZE)));
 

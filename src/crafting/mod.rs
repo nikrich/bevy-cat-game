@@ -10,7 +10,7 @@ impl Plugin for CraftingPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<CraftingState>()
             .init_resource::<RecipeRegistry>()
-            .add_event::<CraftRequest>()
+            .add_message::<CraftRequest>()
             .add_systems(
                 Startup,
                 seed_default_recipes.after(crate::items::registry::seed_default_items),
@@ -89,7 +89,7 @@ impl Default for CraftingState {
 }
 
 /// UI clicks emit this to ask for a specific recipe (by index) to be crafted.
-#[derive(Event)]
+#[derive(Message)]
 pub struct CraftRequest {
     pub index: usize,
 }
@@ -213,7 +213,7 @@ fn try_craft(
     index: usize,
     recipes: &RecipeRegistry,
     inventory: &mut Inventory,
-    inv_events: &mut EventWriter<InventoryChanged>,
+    inv_events: &mut MessageWriter<InventoryChanged>,
 ) {
     let Some(recipe) = recipes.recipes.get(index) else { return };
     if !can_craft(recipe, inventory) {
@@ -238,7 +238,7 @@ fn handle_crafting(
     state: Res<CraftingState>,
     recipes: Res<RecipeRegistry>,
     mut inventory: ResMut<Inventory>,
-    mut inv_events: EventWriter<InventoryChanged>,
+    mut inv_events: MessageWriter<InventoryChanged>,
 ) {
     if !state.open {
         return;
@@ -253,10 +253,10 @@ fn handle_crafting(
 }
 
 fn handle_craft_requests(
-    mut requests: EventReader<CraftRequest>,
+    mut requests: MessageReader<CraftRequest>,
     recipes: Res<RecipeRegistry>,
     mut inventory: ResMut<Inventory>,
-    mut inv_events: EventWriter<InventoryChanged>,
+    mut inv_events: MessageWriter<InventoryChanged>,
 ) {
     for req in requests.read() {
         try_craft(req.index, &recipes, &mut inventory, &mut inv_events);

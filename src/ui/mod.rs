@@ -206,10 +206,10 @@ fn spawn_item_swatch(
                 Node {
                     width: Val::Px(sw),
                     height: Val::Px(sh),
+                    border_radius: BorderRadius::all(Val::Px(radius)),
                     ..default()
                 },
                 BackgroundColor(def.material.base_color()),
-                BorderRadius::all(Val::Px(radius)),
             ));
         });
 }
@@ -474,10 +474,10 @@ fn spawn_recipe_row(
                 flex_direction: FlexDirection::Row,
                 align_items: AlignItems::Center,
                 column_gap: Val::Px(8.0),
+                border_radius: BorderRadius::all(Val::Px(8.0)),
                 ..default()
             },
             BackgroundColor(ROW_BG_IDLE),
-            BorderRadius::all(Val::Px(8.0)),
         ))
         .with_children(|row| {
             // Shortcut number badge
@@ -489,10 +489,10 @@ fn spawn_recipe_row(
                     flex_shrink: 0.0,
                     justify_content: JustifyContent::Center,
                     align_items: AlignItems::Center,
+                    border_radius: BorderRadius::all(Val::Px(11.0)),
                     ..default()
                 },
                 BackgroundColor(Color::srgba(0.0, 0.0, 0.0, 0.30)),
-                BorderRadius::all(Val::Px(11.0)),
             ))
             .with_children(|b| {
                 b.spawn(body_text(assets, &label, 11.0, TEXT_GOLD_DIM));
@@ -551,10 +551,10 @@ fn spawn_recipe_row(
                                     align_items: AlignItems::Center,
                                     padding: UiRect::axes(Val::Px(5.0), Val::Px(2.0)),
                                     column_gap: Val::Px(3.0),
+                                    border_radius: BorderRadius::all(Val::Px(5.0)),
                                     ..default()
                                 },
                                 BackgroundColor(Color::srgba(0.0, 0.0, 0.0, 0.25)),
-                                BorderRadius::all(Val::Px(5.0)),
                             ))
                             .with_children(|chip| {
                                 if let Some(d) = ing_def {
@@ -587,10 +587,10 @@ fn spawn_recipe_row(
                     padding: UiRect::axes(Val::Px(6.0), Val::Px(2.0)),
                     justify_content: JustifyContent::Center,
                     align_items: AlignItems::Center,
+                    border_radius: BorderRadius::all(Val::Px(10.0)),
                     ..default()
                 },
                 BackgroundColor(Color::srgba(0.0, 0.0, 0.0, 0.0)),
-                BorderRadius::all(Val::Px(10.0)),
             ));
         });
 }
@@ -645,7 +645,7 @@ fn spawn_build_hotbar(
                         ..default()
                     },
                     slot_image(assets.panel_dark.clone()),
-                    BorderColor(Color::srgba(0.0, 0.0, 0.0, 0.0)),
+                    BorderColor::all(Color::srgba(0.0, 0.0, 0.0, 0.0)),
                 ))
                 .with_children(|slot| {
                     // Shortcut number (top-left absolute, doesn't affect column layout)
@@ -768,7 +768,7 @@ fn update_inventory_display(
     inventory: Res<Inventory>,
     build_mode: Option<Res<BuildMode>>,
     crafting: Res<CraftingState>,
-    mut inv_events: EventReader<InventoryChanged>,
+    mut inv_events: MessageReader<InventoryChanged>,
     mut bar_vis: Query<&mut Visibility, (With<InventoryBar>, Without<InventorySlot>)>,
     mut slots: Query<(&InventorySlot, &mut Visibility), Without<InventoryBar>>,
     mut counts: Query<(&InventoryCount, &mut Text)>,
@@ -941,7 +941,7 @@ fn handle_crafting_clicks(
     mut state: ResMut<CraftingState>,
     recipes: Res<RecipeRegistry>,
     rows: Query<(&Interaction, &CraftingRecipeRow), Changed<Interaction>>,
-    mut craft_events: EventWriter<CraftRequest>,
+    mut craft_events: MessageWriter<CraftRequest>,
 ) {
     if !state.open {
         return;
@@ -970,7 +970,7 @@ fn handle_crafting_tab_clicks(
             state.category = tab.category;
             state.selected_in_category = 0;
             for mut sp in &mut scroll {
-                sp.offset_y = 0.0;
+                sp.0.y = 0.0;
             }
         }
     }
@@ -1019,7 +1019,7 @@ fn update_build_hotbar(
 /// a hovered/pressed UI element. Bevy 0.16 supports `Overflow::scroll_y()` and
 /// `ScrollPosition` for content offset, but does not auto-handle the wheel.
 fn scroll_hovered_panels(
-    mut wheel: EventReader<MouseWheel>,
+    mut wheel: MessageReader<MouseWheel>,
     interactions: Query<&Interaction>,
     children_q: Query<&Children>,
     mut scrollables: Query<(Entity, &mut ScrollPosition), With<Scrollable>>,
@@ -1037,7 +1037,7 @@ fn scroll_hovered_panels(
 
     for (root, mut scroll) in &mut scrollables {
         if subtree_has_active_interaction(root, &interactions, &children_q) {
-            scroll.offset_y = (scroll.offset_y - dy).max(0.0);
+            scroll.0.y = (scroll.0.y - dy).max(0.0);
         }
     }
 }

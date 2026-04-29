@@ -29,7 +29,7 @@ fn spawn_camera(mut commands: Commands) {
         GameCamera,
         Camera3d::default(),
         Projection::from(OrthographicProjection {
-            scaling_mode: bevy::render::camera::ScalingMode::FixedVertical {
+            scaling_mode: bevy::camera::ScalingMode::FixedVertical {
                 viewport_height: 20.0,
             },
             ..OrthographicProjection::default_3d()

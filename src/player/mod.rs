@@ -4,7 +4,6 @@ use crate::input::GameInput;
 use crate::memory::verbs::CatVerbState;
 use crate::save::LoadedPlayerPos;
 use crate::world::biome::{WorldNoise, SEA_LEVEL};
-use crate::world::chunks::ChunkManager;
 use crate::world::props::PropCollision;
 use crate::world::terrain::step_height;
 
@@ -94,13 +93,12 @@ pub fn move_player(
 
 fn snap_to_terrain(
     mut query: Query<&mut Transform, With<Player>>,
-    chunk_manager: Res<ChunkManager>,
+    noise: Res<WorldNoise>,
     props: Query<(&GlobalTransform, &PropCollision)>,
     time: Res<Time>,
 ) -> Result {
     let mut transform = query.single_mut()?;
 
-    let noise = WorldNoise::new(chunk_manager.seed);
     let sample = noise.sample(
         transform.translation.x as f64,
         transform.translation.z as f64,

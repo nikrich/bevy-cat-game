@@ -8,7 +8,7 @@ pub struct InventoryPlugin;
 impl Plugin for InventoryPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<Inventory>()
-            .add_event::<InventoryChanged>()
+            .add_message::<InventoryChanged>()
             // Fresh-world starter inventory: fills 50 of every stackable item
             // if no save loaded any. Runs in PostStartup so it sees the result
             // of save's load_game pass.
@@ -19,7 +19,7 @@ impl Plugin for InventoryPlugin {
 fn dev_starter_inventory(
     mut inventory: ResMut<Inventory>,
     registry: Res<ItemRegistry>,
-    mut inv_events: EventWriter<InventoryChanged>,
+    mut inv_events: MessageWriter<InventoryChanged>,
 ) {
     if !inventory.items.is_empty() {
         return;
@@ -48,7 +48,7 @@ impl Inventory {
     }
 }
 
-#[derive(Event)]
+#[derive(Message)]
 pub struct InventoryChanged {
     pub item: ItemId,
     pub new_count: u32,

@@ -7,14 +7,13 @@ use crate::inventory::{Inventory, InventoryChanged};
 use crate::items::{ItemId, ItemRegistry, ItemTags};
 use crate::player::Player;
 use crate::world::biome::WorldNoise;
-use crate::world::chunks::ChunkManager;
 use crate::world::terrain::step_height;
 
 pub struct BuildingPlugin;
 
 impl Plugin for BuildingPlugin {
     fn build(&self, app: &mut App) {
-        app.add_event::<PlaceEvent>()
+        app.add_message::<PlaceEvent>()
             .init_resource::<PlaceableItems>()
             .init_resource::<PickupHold>()
             .init_resource::<PlaceDrag>()
@@ -118,7 +117,7 @@ pub struct PlacedBuilding {
 #[derive(Component)]
 struct BuildPreview;
 
-#[derive(Event)]
+#[derive(Message)]
 pub struct PlaceEvent {
     pub item: ItemId,
     pub position: Vec3,
@@ -270,7 +269,7 @@ fn update_preview(
     registry: Res<ItemRegistry>,
     placed_q: Query<(&Transform, &PlacedBuilding), Without<BuildPreview>>,
     mut previews: Query<&mut Transform, With<BuildPreview>>,
-    chunk_manager: Res<ChunkManager>,
+    noise: Res<WorldNoise>,
     player_query: Query<&GlobalTransform, With<Player>>,
 ) {
     let Some(mode) = &build_mode else { return };
@@ -278,8 +277,6 @@ fn update_preview(
     let Some(item) = placeables.0.get(mode.selected).copied() else { return };
     let Some(def) = registry.get(item) else { return };
     let form = def.form;
-
-    let noise = WorldNoise::new(chunk_manager.seed);
 
     let mut place_pos = if let Some(cursor) = input.cursor_world {
         cursor
@@ -351,8 +348,8 @@ fn place_building(
     registry: Res<ItemRegistry>,
     asset_server: Res<AssetServer>,
     mut inventory: ResMut<Inventory>,
-    mut inv_events: EventWriter<InventoryChanged>,
-    mut place_events: EventWriter<PlaceEvent>,
+    mut inv_events: MessageWriter<InventoryChanged>,
+    mut place_events: MessageWriter<PlaceEvent>,
     previews: Query<&Transform, With<BuildPreview>>,
     placed_q: Query<(&Transform, &PlacedBuilding), Without<BuildPreview>>,
     mut meshes: ResMut<Assets<Mesh>>,
@@ -561,7 +558,7 @@ fn pickup_held_building(
     input: Res<crate::input::GameInput>,
     mut commands: Commands,
     mut inventory: ResMut<Inventory>,
-    mut inv_events: EventWriter<InventoryChanged>,
+    mut inv_events: MessageWriter<InventoryChanged>,
     mut hold: ResMut<PickupHold>,
     placed: Query<(Entity, &Transform, &PlacedBuilding)>,
 ) {
