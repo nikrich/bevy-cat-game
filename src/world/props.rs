@@ -44,38 +44,77 @@ const SWAY_RADIUS: f32 = 1.5;
 const SWAY_STRENGTH: f32 = 0.8;
 const SWAY_RECOVERY: f32 = 4.0;
 
-/// glTF scene for a prop kind. When `Some`, the prop spawns as a `SceneRoot`
-/// (Kenney model); otherwise the procedural spawn_* function builds it from
-/// primitives. PropSway still works because it mutates the parent transform's
-/// rotation, which the SceneRoot inherits.
-fn prop_scene_path(kind: &PropKind) -> Option<&'static str> {
-    match kind {
-        PropKind::Tree => Some("models/kenney_survival/tree.glb#Scene0"),
-        PropKind::PineTree => Some("models/kenney_survival/tree-tall.glb#Scene0"),
-        PropKind::Rock => Some("models/kenney_survival/rock-a.glb#Scene0"),
-        PropKind::Boulder => Some("models/kenney_survival/rock-flat.glb#Scene0"),
-        PropKind::Mushroom => Some("models/kenney_food/mushroom.glb#Scene0"),
-        PropKind::Bush => Some("models/kenney_survival/grass-large.glb#Scene0"),
-        PropKind::TundraGrass => Some("models/kenney_survival/grass.glb#Scene0"),
-        PropKind::Cactus
-        | PropKind::Flower
-        | PropKind::DeadBush
-        | PropKind::IceRock => None,
-    }
+/// glTF scene for a prop kind, picked deterministically by `hash` so the same
+/// tile always gets the same variant across reloads. Returns the asset path
+/// with `#Scene0` suffix. `None` falls back to procedural primitives.
+///
+/// Most kinds use the KayKit Forest Nature pack (more variety, more polish);
+/// rocks/boulders still use Kenney Survival because KayKit rocks are visually
+/// less distinct against terrain. Mushroom uses Kenney Food.
+fn prop_scene_path(kind: &PropKind, hash: u32) -> Option<&'static str> {
+    let pick = |paths: &[&'static str]| paths[(hash as usize) % paths.len()];
+    Some(match kind {
+        PropKind::Tree => pick(&[
+            "models/kaykit_forest/Tree_1_A_Color1.gltf#Scene0",
+            "models/kaykit_forest/Tree_2_A_Color1.gltf#Scene0",
+            "models/kaykit_forest/Tree_3_A_Color1.gltf#Scene0",
+            "models/kaykit_forest/Tree_4_A_Color1.gltf#Scene0",
+        ]),
+        PropKind::PineTree => pick(&[
+            "models/kaykit_forest/Tree_1_B_Color1.gltf#Scene0",
+            "models/kaykit_forest/Tree_2_B_Color1.gltf#Scene0",
+            "models/kaykit_forest/Tree_3_B_Color1.gltf#Scene0",
+        ]),
+        PropKind::Bush => pick(&[
+            "models/kaykit_forest/Bush_1_A_Color1.gltf#Scene0",
+            "models/kaykit_forest/Bush_2_B_Color1.gltf#Scene0",
+            "models/kaykit_forest/Bush_3_A_Color1.gltf#Scene0",
+            "models/kaykit_forest/Bush_4_A_Color1.gltf#Scene0",
+            "models/kaykit_forest/Bush_1_C_Color1.gltf#Scene0",
+            "models/kaykit_forest/Bush_2_E_Color1.gltf#Scene0",
+        ]),
+        PropKind::TundraGrass => pick(&[
+            "models/kaykit_forest/Grass_1_A_Color1.gltf#Scene0",
+            "models/kaykit_forest/Grass_1_B_Color1.gltf#Scene0",
+            "models/kaykit_forest/Grass_2_A_Color1.gltf#Scene0",
+        ]),
+        PropKind::Rock => pick(&[
+            "models/kaykit_forest/Rock_1_A_Color1.gltf#Scene0",
+            "models/kaykit_forest/Rock_2_A_Color1.gltf#Scene0",
+            "models/kaykit_forest/Rock_3_A_Color1.gltf#Scene0",
+        ]),
+        PropKind::Boulder => pick(&[
+            "models/kaykit_forest/Rock_1_B_Color1.gltf#Scene0",
+            "models/kaykit_forest/Rock_2_B_Color1.gltf#Scene0",
+            "models/kaykit_forest/Rock_3_B_Color1.gltf#Scene0",
+        ]),
+        PropKind::Mushroom => "models/kenney_food/mushroom.glb#Scene0",
+        // Procedural fallback for the rest:
+        PropKind::Cactus | PropKind::Flower | PropKind::DeadBush | PropKind::IceRock => {
+            return None;
+        }
+    })
 }
 
-/// Per-kind scale and Y lift to make Kenney models sit on top of the terrain.
-/// Origins are typically at the model centre, so a lift keeps the visible
-/// mesh above the tile surface.
+/// Position-derived hash so each tile gets a consistent variant.
+fn pos_hash(x: f32, z: f32) -> u32 {
+    let xi = x.round() as i64;
+    let zi = z.round() as i64;
+    ((xi.wrapping_mul(73)) ^ (zi.wrapping_mul(137)) ^ 0x9E37_79B1) as u32
+}
+
+/// Per-kind scale and Y lift to make models sit on top of the terrain.
+/// KayKit models are authored at unit-meter scale so most need a small bump
+/// rather than a large multiplier; rocks/boulders still use Kenney sizing.
 fn prop_scene_transform(kind: &PropKind) -> (f32, f32) {
     match kind {
-        PropKind::Tree => (2.2, 0.0),
-        PropKind::PineTree => (2.4, 0.0),
-        PropKind::Rock => (1.6, 0.25),
-        PropKind::Boulder => (2.0, 0.30),
+        PropKind::Tree => (1.0, 0.0),
+        PropKind::PineTree => (1.1, 0.0),
+        PropKind::Rock => (0.9, 0.05),
+        PropKind::Boulder => (1.1, 0.05),
         PropKind::Mushroom => (1.4, 0.05),
-        PropKind::Bush => (1.3, 0.05),
-        PropKind::TundraGrass => (1.2, 0.05),
+        PropKind::Bush => (1.0, 0.05),
+        PropKind::TundraGrass => (1.0, 0.05),
         _ => (1.0, 0.0),
     }
 }
@@ -107,7 +146,8 @@ fn try_spawn_kenney_prop(
     y: f32,
     z: f32,
 ) -> bool {
-    let Some(path) = prop_scene_path(&kind) else {
+    let hash = pos_hash(x, z);
+    let Some(path) = prop_scene_path(&kind, hash) else {
         return false;
     };
     let (scale, lift) = prop_scene_transform(&kind);
