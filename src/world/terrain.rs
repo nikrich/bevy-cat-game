@@ -1,6 +1,6 @@
 use bevy::prelude::*;
-use noise::{NoiseFn, Perlin};
 
+use super::biome::{Biome, WorldNoise, SEA_LEVEL};
 use super::chunks::{Chunk, CHUNK_SIZE};
 
 const TILE_SIZE: f32 = 1.0;
@@ -8,41 +8,15 @@ const TILE_SIZE: f32 = 1.0;
 #[derive(Component)]
 pub struct Tile {
     pub height: f32,
+    pub biome: Biome,
 }
 
-/// Terrain height at a world-space position. Used by other systems (props, player snapping).
-pub fn terrain_height(perlin: &Perlin, world_x: f64, world_z: f64) -> f32 {
-    let nx = world_x * 0.05;
-    let nz = world_z * 0.05;
-
-    let height = perlin.get([nx, nz]) * 2.0
-        + perlin.get([nx * 2.0, nz * 2.0]) * 0.5
-        + perlin.get([nx * 4.0, nz * 4.0]) * 0.25;
-
-    height as f32
-}
+#[derive(Component)]
+pub struct WaterTile;
 
 /// Quantize height to stepped increments for the low-poly look.
 pub fn step_height(height: f32) -> f32 {
     (height * 4.0).round() / 4.0
-}
-
-/// Determine biome type from height (used by props system too).
-#[derive(Clone, Copy, PartialEq, Eq)]
-pub enum BiomeKind {
-    Sand,
-    Dirt,
-    Grass,
-}
-
-pub fn biome_at_height(height: f32) -> BiomeKind {
-    if height < -0.5 {
-        BiomeKind::Sand
-    } else if height < -0.2 {
-        BiomeKind::Dirt
-    } else {
-        BiomeKind::Grass
-    }
 }
 
 pub fn spawn_chunk_terrain(
@@ -53,39 +27,21 @@ pub fn spawn_chunk_terrain(
     chunk_z: i32,
     seed: u32,
 ) -> Entity {
-    let perlin = Perlin::new(seed);
+    let noise = WorldNoise::new(seed);
 
-    // Color palette matching the warm, earthy art style
-    let grass_colors = [
-        Color::srgb(0.45, 0.65, 0.35),
-        Color::srgb(0.55, 0.72, 0.40),
-        Color::srgb(0.62, 0.78, 0.45),
-    ];
-    let dirt_color = Color::srgb(0.60, 0.48, 0.35);
-    let sand_color = Color::srgb(0.82, 0.76, 0.62);
+    let tile_mesh = meshes.add(Mesh::from(Cuboid::new(TILE_SIZE, 0.6, TILE_SIZE)));
+    let water_mesh = meshes.add(Mesh::from(Cuboid::new(TILE_SIZE, 0.4, TILE_SIZE)));
 
-    let tile_mesh = meshes.add(Mesh::from(Cuboid::new(TILE_SIZE, 0.2, TILE_SIZE)));
+    // Pre-build materials per biome (cache to avoid duplicates within a chunk)
+    let mut material_cache: std::collections::HashMap<(Biome, u8), Handle<StandardMaterial>> =
+        std::collections::HashMap::new();
 
-    let grass_materials: Vec<_> = grass_colors
-        .iter()
-        .map(|c| {
-            materials.add(StandardMaterial {
-                base_color: *c,
-                perceptual_roughness: 0.9,
-                ..default()
-            })
-        })
-        .collect();
-
-    let dirt_material = materials.add(StandardMaterial {
-        base_color: dirt_color,
-        perceptual_roughness: 0.95,
-        ..default()
-    });
-
-    let sand_material = materials.add(StandardMaterial {
-        base_color: sand_color,
-        perceptual_roughness: 0.85,
+    let water_material = materials.add(StandardMaterial {
+        base_color: Color::srgb(0.20, 0.38, 0.55),
+        emissive: Color::srgb(0.03, 0.06, 0.10).into(),
+        perceptual_roughness: 0.08,
+        metallic: 0.0,
+        reflectance: 0.8,
         ..default()
     });
 
@@ -108,43 +64,81 @@ pub fn spawn_chunk_terrain(
             let wx = world_offset_x + lx;
             let wz = world_offset_z + lz;
 
-            let height = terrain_height(&perlin, wx as f64, wz as f64);
-            let biome = biome_at_height(height);
+            let sample = noise.sample(wx as f64, wz as f64);
 
-            let material = match biome {
-                BiomeKind::Sand => sand_material.clone(),
-                BiomeKind::Dirt => dirt_material.clone(),
-                BiomeKind::Grass => {
-                    let nx = wx as f64 * 0.05;
-                    let nz = wz as f64 * 0.05;
-                    let shade_noise = perlin.get([nx * 3.0 + 100.0, nz * 3.0 + 100.0]);
-                    let idx = if shade_noise < -0.3 {
-                        0
-                    } else if shade_noise < 0.3 {
-                        1
-                    } else {
-                        2
-                    };
-                    grass_materials[idx].clone()
-                }
-            };
+            // Color variation within biome
+            let shade_hash = ((wx * 7 + wz * 13).unsigned_abs() % 3) as u8;
 
-            let sh = step_height(height);
+            let cache_key = (sample.biome, shade_hash);
+            let material = material_cache
+                .entry(cache_key)
+                .or_insert_with(|| {
+                    materials.add(StandardMaterial {
+                        base_color: sample.biome.terrain_color(shade_hash),
+                        perceptual_roughness: sample.biome.roughness(),
+                        ..default()
+                    })
+                })
+                .clone();
 
-            let child = commands
-                .spawn((
-                    Tile { height },
-                    Mesh3d(tile_mesh.clone()),
-                    MeshMaterial3d(material),
-                    Transform::from_xyz(
-                        wx as f32 * TILE_SIZE,
-                        sh * 0.5,
-                        wz as f32 * TILE_SIZE,
-                    ),
-                ))
-                .id();
+            let sh = step_height(sample.elevation * sample.biome.height_scale());
 
-            commands.entity(chunk_entity).add_child(child);
+            if sample.biome.is_water() {
+                // Terrain floor under water (darker)
+                let floor_y = step_height(SEA_LEVEL) * 0.5 - 1.2;
+                let floor = commands
+                    .spawn((
+                        Tile {
+                            height: sample.elevation,
+                            biome: sample.biome,
+                        },
+                        Mesh3d(tile_mesh.clone()),
+                        MeshMaterial3d(material),
+                        Transform::from_xyz(
+                            wx as f32 * TILE_SIZE,
+                            floor_y,
+                            wz as f32 * TILE_SIZE,
+                        ),
+                    ))
+                    .id();
+
+                // Water surface at sea level
+                let water_y = step_height(SEA_LEVEL) * 0.5 - 0.15;
+                let water = commands
+                    .spawn((
+                        WaterTile,
+                        Mesh3d(water_mesh.clone()),
+                        MeshMaterial3d(water_material.clone()),
+                        Transform::from_xyz(
+                            wx as f32 * TILE_SIZE,
+                            water_y,
+                            wz as f32 * TILE_SIZE,
+                        ),
+                    ))
+                    .id();
+
+                commands
+                    .entity(chunk_entity)
+                    .add_children(&[floor, water]);
+            } else {
+                let child = commands
+                    .spawn((
+                        Tile {
+                            height: sample.elevation,
+                            biome: sample.biome,
+                        },
+                        Mesh3d(tile_mesh.clone()),
+                        MeshMaterial3d(material),
+                        Transform::from_xyz(
+                            wx as f32 * TILE_SIZE,
+                            sh * 0.5,
+                            wz as f32 * TILE_SIZE,
+                        ),
+                    ))
+                    .id();
+
+                commands.entity(chunk_entity).add_child(child);
+            }
         }
     }
 

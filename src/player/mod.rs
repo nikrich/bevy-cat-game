@@ -1,8 +1,7 @@
 use bevy::prelude::*;
-use noise::Perlin;
-
+use crate::world::biome::WorldNoise;
 use crate::world::chunks::ChunkManager;
-use crate::world::terrain::{step_height, terrain_height};
+use crate::world::terrain::step_height;
 
 pub struct PlayerPlugin;
 
@@ -80,13 +79,12 @@ fn snap_to_terrain(
 ) -> Result {
     let mut transform = query.single_mut()?;
 
-    let perlin = Perlin::new(chunk_manager.seed);
-    let height = terrain_height(
-        &perlin,
+    let noise = WorldNoise::new(chunk_manager.seed);
+    let sample = noise.sample(
         transform.translation.x as f64,
         transform.translation.z as f64,
     );
-    let sh = step_height(height);
+    let sh = step_height(sample.elevation * sample.biome.height_scale());
     let target_y = sh * 0.5 + 0.5;
 
     // Smooth vertical movement to avoid jumpiness on stepped terrain

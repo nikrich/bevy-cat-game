@@ -1,7 +1,9 @@
+pub mod biome;
 pub mod chunks;
 pub mod daynight;
 pub mod props;
 pub mod terrain;
+pub mod water;
 
 use bevy::prelude::*;
 
@@ -20,10 +22,14 @@ impl Plugin for WorldPlugin {
                     chunks::load_nearby_chunks,
                     chunks::unload_distant_chunks,
                     props::spawn_chunk_props,
+                    props::sway_props_near_player,
+                    props::apply_prop_sway,
                     daynight::advance_time,
                     daynight::update_sun,
                     daynight::update_sky_color,
                     daynight::update_ambient_light,
+                    water::init_water_ripples,
+                    water::update_water_ripples,
                 ),
             );
     }
