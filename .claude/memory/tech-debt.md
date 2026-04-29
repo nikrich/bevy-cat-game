@@ -177,6 +177,26 @@
 - **Effort**: M
 - **Status**: Open
 
+## DEBT-020: W1.4 per-biome top-face texture atlas
+- **Added**: 2026-04-29
+- **Severity**: Low
+- **Area**: world/terrain, render
+- **What**: W1.4's full vision — one texture tile *per biome* on cell tops (so Forest reads as leaf litter, Desert as sand grain, Snow as crystals, etc.) — is not shipped. The current `TerrainMaterial.base_color_texture` is one shared procedural noise tile that multiplies with the per-vertex biome tint, which gets us most of the visual lift but doesn't differentiate biomes by texture, only by tint
+- **Why**: A real atlas needs (1) a texture asset per biome (or one combined atlas with per-cell UV offset), (2) a custom material extension to sample the right tile per cell, and (3) the spec amendment to W1.4's "smooth blending across vertex boundaries" wording — the cuboid topology means tile-aligned biome edges, not gradient blending (DEC-018). The procedural-noise version was the cheapest visible win; a full atlas is polish that doesn't gate any other phase
+- **Fix when**: Phase 7 polish, or earlier if biome distinguishability becomes a player-feedback issue. Lowest cost-benefit win is per-biome procedural noise tiles (different scales/octaves per biome) rather than authored art
+- **Effort**: M
+- **Status**: Open
+
+## DEBT-021: W1.12 / W1.13 navmesh + override deferred to Phase 5
+- **Added**: 2026-04-29
+- **Severity**: Low
+- **Area**: world/navmesh
+- **What**: `bevy_landmass` integration (W1.12) and the `NavmeshOverride` data path for stairs/cart paths (W1.13) are not implemented. Without a navmesh, NPC AI is limited to the wander-and-flee pattern the existing animal system uses
+- **Why**: Phase 1's player-facing payoff doesn't depend on a navmesh. Phase 5 is when NPC cats need to actually pathfind around terrain — that's the right cost-benefit moment, especially since `bevy_landmass`'s API surface differs from the spec-assumed `oxidized_navigation` and budget is non-trivial (1-2 sessions for the integration spike per the original DEC-021 risk note)
+- **Fix when**: Start of Phase 5 (NPC cats). Path will need updating because `bevy_landmass` has a different tile model than what DEC-021 / W1.12 originally assumed; treat the integration as fresh research at that point. Fallbacks if it doesn't fit: `vleue_navigator` or a hand-rolled grid navmesh on the existing 32×32 cell grid
+- **Effort**: L (1-2 sessions)
+- **Status**: Open
+
 ## DEBT-013: Phase 0 pending crate adoptions — superseded
 - **Added**: 2026-04-29
 - **Severity**: -

@@ -1,5 +1,21 @@
 # Session Journal
 
+## 2026-04-29 -- Phase 1 closed (13 shipped + 2 accepted deferrals)
+
+**Closure:** Phase 1 (`spec/phases/02-terrain.md`) shipped 13 of 15 work items: vertex-grid terrain (W1.1/W1.2/W1.5), all five brushes (W1.10), auto-flatten API (W1.11), brush hotbar UI (W1.14), edit persistence including biome paint (W1.15), water/props/animals/gathering migrations (W1.6-W1.9), partial W1.4 (procedural noise tile), plus three bonus follow-ups not in spec (props snap with terrain, paint-driven prop respawn, pop animation on painted props). W1.3 was rejected per art direction (DEC-018). W1.4 full atlas and W1.12/W1.13 navmesh are deferred (DEC-019).
+
+**Accepted deferrals:**
+- W1.4 full per-biome texture atlas → DEBT-020. Procedural noise tile gets us most of the visual lift; per-biome differentiation is cosmetic polish that doesn't gate any phase. Phase 7, or earlier if biome distinguishability becomes a player-feedback issue
+- W1.12 / W1.13 `bevy_landmass` navmesh + `NavmeshOverride` → DEBT-021. Heavy lift, no visible payoff until Phase 5 NPC cats. Treat as fresh research when picked up — `bevy_landmass` API differs from the original `oxidized_navigation` spec assumption
+
+**Decisions recorded:** DEC-019 (Phase 1 closed; W1.4 atlas + navmesh deferred). DEC-017 / DEC-018 already on the books from earlier in the phase.
+
+**Tech debt closed:** DEBT-007 (per-tile entities), DEBT-008 (material/mesh duplication per chunk).
+
+**New tech debt:** DEBT-018, DEBT-019, DEBT-020, DEBT-021.
+
+**Next phase:** Phase 2 build-feel (`spec/phases/03-build-feel.md`). The natural first slice is wiring `Terrain::flatten_rect` (W1.11 API, currently on the debug `F` hotkey) into actual building placement so a placed piece auto-flattens its footprint.
+
 ## 2026-04-29 -- Phase 1 continued: props snap with terrain, textured ground, paint-driven prop respawn with pop animation
 
 **What was done:**
