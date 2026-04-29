@@ -55,6 +55,7 @@ pub enum Action {
     Place,
     RotatePiece,
     ToggleBuild,
+    ToggleEditTerrain,
     ToggleInventory,
     ToggleCraft,
     Save,
@@ -115,6 +116,8 @@ impl Action {
 
         map.insert(Self::ToggleBuild, KeyCode::KeyB);
         map.insert(Self::ToggleBuild, GamepadButton::North);
+
+        map.insert(Self::ToggleEditTerrain, KeyCode::KeyT);
 
         map.insert(Self::ToggleInventory, KeyCode::KeyI);
         map.insert(Self::ToggleInventory, GamepadButton::Select);

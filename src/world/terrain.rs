@@ -19,7 +19,7 @@
 use bevy::asset::RenderAssetUsages;
 use bevy::mesh::{Indices, PrimitiveTopology};
 use bevy::prelude::*;
-use bevy_rapier3d::prelude::{Collider, RigidBody, TriMeshFlags};
+use bevy_rapier3d::prelude::{Collider, RigidBody};
 use std::collections::{HashMap, HashSet};
 
 use super::biome::{Biome, WorldNoise};
@@ -148,6 +148,60 @@ impl Terrain {
         self.height_at(world_x, world_z)
             .unwrap_or_else(|| surface_height(noise, world_x as f64, world_z as f64))
     }
+
+    /// Read the height stored at world vertex `(wx, wz)`. Each integer world
+    /// coord owns exactly one storage slot, in the chunk where the vertex is
+    /// the NW corner of a cell (`rem_euclid` mapping — slot indices fall in
+    /// `0..CHUNK_CELLS`). Returns `None` if that chunk isn't loaded.
+    pub fn vertex_height(&self, wx: i32, wz: i32) -> Option<f32> {
+        let (cx, cz, lx, lz) = vertex_owner(wx, wz);
+        let chunk = self.chunks.get(&(cx, cz))?;
+        Some(chunk.heights[ChunkData::idx(lx, lz)])
+    }
+
+    /// Write a height at world vertex `(wx, wz)` and mark every chunk whose
+    /// rendered mesh depends on this vertex as dirty. Each cell's mesh
+    /// reads heights at its own NW corner plus the four cardinal-neighbour
+    /// NW corners (for risers); editing one vertex therefore affects up to
+    /// five cells, in up to four chunks if the vertex sits at a chunk
+    /// corner.
+    ///
+    /// Returns `true` if the height changed, `false` if the chunk wasn't
+    /// loaded or the new height matched the old.
+    pub fn set_vertex_height(&mut self, wx: i32, wz: i32, new_h: f32) -> bool {
+        let (cx, cz, lx, lz) = vertex_owner(wx, wz);
+        let Some(chunk) = self.chunks.get_mut(&(cx, cz)) else {
+            return false;
+        };
+        let idx = ChunkData::idx(lx, lz);
+        if (chunk.heights[idx] - new_h).abs() < f32::EPSILON {
+            return false;
+        }
+        chunk.heights[idx] = new_h;
+
+        for (dx, dz) in [(0, 0), (-1, 0), (1, 0), (0, -1), (0, 1)] {
+            let cell_world_x = wx + dx;
+            let cell_world_z = wz + dz;
+            let chunk_x = cell_world_x.div_euclid(CHUNK_CELLS);
+            let chunk_z = cell_world_z.div_euclid(CHUNK_CELLS);
+            if self.chunks.contains_key(&(chunk_x, chunk_z)) {
+                self.dirty.insert((chunk_x, chunk_z));
+            }
+        }
+        true
+    }
+}
+
+/// Map a world vertex coord to the chunk that owns its storage slot. Uses
+/// `rem_euclid` so vertices on chunk boundaries land at `lx == 0` of the
+/// next chunk, never at the vestigial `lx == CHUNK_CELLS` slot of the
+/// previous one.
+fn vertex_owner(wx: i32, wz: i32) -> (i32, i32, usize, usize) {
+    let cx = wx.div_euclid(CHUNK_CELLS);
+    let cz = wz.div_euclid(CHUNK_CELLS);
+    let lx = wx.rem_euclid(CHUNK_CELLS) as usize;
+    let lz = wz.rem_euclid(CHUNK_CELLS) as usize;
+    (cx, cz, lx, lz)
 }
 
 /// Map a world XZ to (chunk coord, local vertex index). Floor for chunk
@@ -422,7 +476,11 @@ pub fn build_chunk_mesh(geom: &ChunkGeometry) -> Mesh {
 
 /// Build the rapier trimesh collider from the same geometry buffers, so
 /// physics matches the visual exactly — the cat's capsule clips the same
-/// risers it can see.
+/// risers it can see. No `TriMeshFlags` preprocessing: pseudo-normals,
+/// duplicate-vertex merging, topology graph, and degenerate-triangle
+/// filtering are all redundant for our hand-built meshes and add real
+/// cost on every brush regen (~10–100 ms per chunk in debug, enough to
+/// freeze the schedule when several chunks regen on the same frame).
 pub fn build_chunk_collider(geom: &ChunkGeometry) -> Option<Collider> {
     let verts: Vec<Vec3> = geom
         .positions
@@ -434,7 +492,7 @@ pub fn build_chunk_collider(geom: &ChunkGeometry) -> Option<Collider> {
         .chunks_exact(3)
         .map(|c| [c[0], c[1], c[2]])
         .collect();
-    Collider::trimesh_with_flags(verts, tris, TriMeshFlags::all()).ok()
+    Collider::trimesh(verts, tris).ok()
 }
 
 // ---------- Regen system ----------
