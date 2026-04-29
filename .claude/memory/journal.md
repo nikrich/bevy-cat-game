@@ -1,6 +1,6 @@
 # Session Journal
 
-## 2026-04-29 -- Phase 0 foundations: Bevy 0.18, leafwing, egui, asset_loader, game states (10 of 14 items)
+## 2026-04-29 -- Phase 0 closed (12 shipped + 2 accepted deferrals)
 
 **What was done:**
 - W0.1 Bevy 0.16 → 0.18.1 with the full breaking-change pass: `Event` → `Message` (derive, EventReader/Writer, add_event/add_message), UI bundles (BorderRadius into Node), AmbientLight split into per-camera component + GlobalAmbientLight resource, ScrollPosition Vec2 tuple, BorderColor per-side with `::all()`, CascadeShadowConfigBuilder moved to bevy::light, ScalingMode moved to bevy::camera, UiSystem → UiSystems, WindowResolution constructor changed
@@ -13,28 +13,34 @@
 - W0.12 Save path resolves via `directories::BaseDirs::data_dir()` namespaced as "Cat World" — Steam Cloud-friendly per-user dir, e.g. `~/Library/Application Support/Cat World/savegame.json` on macOS. `--save-dir` CLI override for tests
 - W0.13 World seed persisted in SaveData with `serde(default)` so legacy saves keep loading; ChunkManager.seed restored on load. Closes DEBT-004
 - W0.14 Headless smoke tests in `tests/smoke.rs` using `MinimalPlugins + StatesPlugin`. Two tests: app boots and ticks 30 frames; state transition resolves in one tick. First brick of DEBT-006
+- W0.3 + W0.4 rapier + tnua + jump (follow-up session, DEBT-016 closed). `RapierPhysicsPlugin` + `TnuaControllerPlugin::<ControlScheme>::new(Update)` + `TnuaRapier3dPlugin::new(Update)`. Per-tile `Collider::cuboid` on terrain (intentionally throwaway, Phase 1 swaps for vertex-height trimesh). Prop colliders attached on a child entity offset to the prop's vertical centre so climb-on-top works. Per-form colliders on placed buildings (walls/doors/windows/floors/roofs) via `attach_for_form`, retiring the hand-rolled `push_player_out_of_walls`. Player: capsule rigid body + `LockedAxes::ROTATION_LOCKED` + `TnuaController` + `TnuaConfig` with `TnuaBuiltinWalkConfig { speed: 5.0, float_height: 1.0, cling_distance: 0.3, max_slope: PI/3 }` and `TnuaBuiltinJumpConfig { height: 1.6 }`. `Action::Jump` (Space + gamepad South) triggers the jump action; suppressed in build mode where Space is overloaded for placement. `snap_to_terrain` removed. Wading tuned: `floor_y = step_height(SEA_LEVEL) * 0.5 - 1.05` so capsule centre settles at y≈0 and the cat is half-submerged inside the water mesh. `init_water_ripples` switched to `try_insert` to swallow chunk-unload races that physics-driven `player_chunk` churn surfaced. Quit hard-exits via `std::process::exit(0)` (DEBT-017 — `AppExit` deadlocks under Bevy 0.18 + rapier + egui)
 
-**Deferred with debt:**
-- W0.7 procedural atmosphere — trialled, reverted. Bevy 0.18's Earth-scale lighting (RAW_SUNLIGHT, km-scale geometry, HDR + AcesFitted + Bloom) clashed with the warm pastel low-poly palette. DEBT-014 logged; DEC-013 amended
-- W0.11 moonshine-save — value of "new components auto-persist" is marginal until Phase 5 NPCs ship in volume; the migration also needs custom `ItemId` ↔ `save_key` glue and changes the on-disk format to RON (would amend DEC-015's JSON commitment). DEBT-015 logged
-- W0.3 + W0.4 rapier + tnua — paired physics rewrite. Half-shipping is worse than nothing; needs a focused session because side effects ripple into terrain colliders, prop colliders for climb-on-top behaviour, step-up tuning for our 0.25-stepped terrain, and `pose_player` re-validation under physics-driven Y. DEBT-016 logged
+**Deferred with debt (acknowledged for Phase 0):**
+- W0.7 procedural atmosphere — trialled and reverted; Bevy 0.18's Earth-scale lighting (RAW_SUNLIGHT, km-scale geometry, HDR + AcesFitted + Bloom) clashed with the warm pastel palette. DEC-013 amended to keep the manual `daynight::update_sky_color` gradient. Revisit only if a phase needs something the manual sky can't represent, or pair with the Phase 7 polish pass. DEBT-014
+- W0.11 moonshine-save — declined after digging in: save data is dominated by *resources* (Inventory, WorldMemory, Journal, ChunkManager.seed), not entity-tagged components, so moonshine's reflection-auto-serialize win is marginal; on-disk format change JSON→RON would amend DEC-015; `ItemId`↔`save_key` glue still needed. Revisit at start of Phase 5 (NPC archetypes flip the cost-benefit). DEBT-015
 
-**Decisions recorded:** DEC-013 (Bevy 0.18 + ecosystem stack, atmosphere clause amended), DEC-014 (game state machine), DEC-015 (moonshine save format — declared, then deferred to Phase 5), DEC-016 (24-minute day cycle, supersedes DEC-006). Superseded: DEC-006, DEC-007, DEC-011
+**Decisions recorded:** DEC-013 (Bevy 0.18 + ecosystem stack, atmosphere clause amended to keep the manual gradient), DEC-014 (game state machine), DEC-015 (moonshine save format — declared, then deferred to Phase 5), DEC-016 (24-minute day cycle, supersedes DEC-006). Superseded: DEC-006, DEC-007, DEC-011
+
+**Tech debt closed:** DEBT-003, DEBT-004, DEBT-011, DEBT-012, DEBT-016. Opened: DEBT-013 (Phase 0 catch-all, since superseded), DEBT-014 (atmosphere mismatch), DEBT-015 (moonshine deferred), DEBT-017 (AppExit deadlock).
 
 **Files created:** `src/state.rs`, `src/ui/crafting_egui.rs`, `tests/smoke.rs`. Spec docs added under `spec/phases/` (00-index through 08-launch)
 
-**Files heavily modified:** `Cargo.toml` (bevy 0.18, +leafwing-input-manager, +bevy_egui, +bevy_asset_loader, +directories), `src/main.rs`, `src/input/mod.rs` (full rewrite), `src/ui/mod.rs` (crafting menu spawn skipped, HUD gated to Playing), `src/save.rs` (OS-aware path + seed persistence), `src/world/mod.rs`, `src/world/biome.rs`, plus every gameplay consumer to swap `GameInput` → `ActionState<Action>` + `CursorState`
+**Files heavily modified:** `Cargo.toml` (bevy 0.18, +leafwing-input-manager, +bevy_egui, +bevy_asset_loader, +bevy_rapier3d, +bevy-tnua, +bevy-tnua-rapier3d, +directories), `src/main.rs`, `src/input/mod.rs` (full rewrite), `src/ui/mod.rs` (crafting menu spawn skipped, HUD gated to Playing), `src/save.rs` (OS-aware path + seed persistence), `src/player/mod.rs` (full rewrite — tnua-driven), `src/world/mod.rs`, `src/world/biome.rs`, `src/world/terrain.rs` (rapier colliders + wade depth), `src/world/props.rs` (child collider entities), `src/building/collision.rs` (rapier-resolved walls), plus every gameplay consumer to swap `GameInput` → `ActionState<Action>` + `CursorState`
 
 **Surprising things:**
 - bevy_egui's `EguiPrimaryContextPass` is a proper schedule; multiple egui screens just register multiple systems on it with state-gated `run_if`
 - `bevy-tnua` is the dashed crate name; `bevy_tnua` doesn't exist on crates.io
 - Bevy 0.18's atmosphere is not a clean drop-in for non-realistic art directions; "tune the dials" fights the model
 - 16-param SystemParam limit hits faster than expected once you split `GameInput` into `ActionState` + `CursorState` and consumers add `crafting`/`build_mode`/etc. — `place_building` had to drop the unread `PlaceEvent` to fit
+- `TnuaBuiltinWalkConfig::speed` defaults to 20.0 and *multiplies* `desired_motion`. If you also pre-multiply by a unit-scale player speed, you get a 100 m/s cat. Pass a unit vector × sprint factor and let the config own the m/s
+- Tnua's `TnuaScheme` derive generates `<EnumName>Config` as a sibling type in the same module — not under `bevy_tnua::controller`. Importing that path was a dead end
+- The chunk unload race (entity despawned between query collection and deferred command apply) gets *much* more frequent under physics-driven player position because `player_chunk` recomputes faster while gravity/spring are settling. `try_insert` is the idiomatic fix
+- Bevy 0.18 + rapier + egui can deadlock on `AppExit` shutdown — process exits cleanly via `std::process::exit(0)` but hangs on the polite path. DEBT-017
 
-**Open threads:**
-- Next session: W0.3 + W0.4 (rapier + tnua) per DEBT-016. Recommended order: rapier plugin + terrain colliders → player rigid body (verify gravity drops cat onto terrain) → tnua controller + leafwing wiring → prop colliders → remove `snap_to_terrain`. Phase 1 then re-does terrain colliders against vertex-height grid, so per-tile cuboid is intentionally throwaway
-- W0.7 atmosphere remains open as DEBT-014; revisit during Phase 7 polish or amend the spec to keep the manual gradient as canonical
-- W0.11 moonshine-save remains open as DEBT-015; revisit at start of Phase 5
+**Open threads (out of Phase 0 scope):**
+- W0.7 atmosphere stays as DEBT-014; revisit during Phase 7 polish or pair with Phase 1 W1.3 shader work as a custom gradient skybox
+- W0.11 moonshine-save stays as DEBT-015; revisit at start of Phase 5 when NPC archetypes flip the cost-benefit
+- DEBT-017 AppExit deadlock; bisect across Bevy/rapier/egui upgrades, or re-route Quit through "auto-save + return to MainMenu"
 
 ## 2026-04-29 -- Full gameplay loop: biomes, crafting, building, animals, particles, save/load
 
