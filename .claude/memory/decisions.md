@@ -47,3 +47,27 @@
 - **Decision**: Full cycle in 12 real minutes (2 in-game hours per real minute). Start at 8am (pleasant morning). Six phases: dawn 5-7, morning 7-9, day 9-16, dusk 16-18, twilight 18-20, night 20-5. Night uses dim cool-blue moonlight rather than darkness
 - **Alternatives**: Longer cycle (30+ min, transitions too rare to notice), real-time clock (locks players into their timezone's time), no night (misses atmosphere opportunity)
 - **Consequences**: Players see a full dawn-to-dusk cycle in a short session. Night is still playable (moonlight, not blackout) -- reinforces peaceful identity. Sky color, sun position, and ambient light all transition smoothly. Speed is adjustable via WorldTime resource for future player control
+
+## DEC-007: Unified input abstraction for KB+mouse and gamepad
+- **Date**: 2026-04-29
+- **Status**: Accepted
+- **Context**: Game needs to support both keyboard+mouse and gamepad. Building placement needs mouse cursor-to-world raycasting. Multiple systems (player, crafting, gathering, building) all read input independently
+- **Decision**: Single GameInput resource populated in PreUpdate from all input sources. All game systems read GameInput, never raw keyboard/mouse/gamepad. Cursor raycasts to Y=0 plane for world position
+- **Alternatives**: leafwing-input-manager crate (adds dependency, heavier), per-system raw input reading (duplicated logic, hard to add gamepad)
+- **Consequences**: Clean separation of input reading from game logic. Adding new input sources (touch, rebinding) only requires changes in input/mod.rs. Slight latency (1 frame) between input and action due to PreUpdate timing
+
+## DEC-008: Manual JSON save format without serde
+- **Date**: 2026-04-29
+- **Status**: Accepted
+- **Context**: Need save/load for player position, inventory, and placed buildings. Adding serde + serde_json adds compile time and dependency weight
+- **Decision**: Hand-written JSON serialization and simple string-based parsing. Save format is human-readable and editable
+- **Alternatives**: serde + serde_json (automatic, more robust), bincode (compact, not human-readable), RON (Rust-native but still a dependency)
+- **Consequences**: Fragile parser that needs manual updates when save format changes. Works for current scope but should migrate to serde if save format grows complex (more entity types, world state, etc.)
+
+## DEC-009: Temperature/moisture biome classification
+- **Date**: 2026-04-29
+- **Status**: Accepted
+- **Context**: Need diverse biomes that feel natural and transition smoothly. Simple height-based coloring (sand/dirt/grass) was too uniform
+- **Decision**: Two additional noise layers (temperature, moisture) at large scale drive biome classification. Temperature decreases with altitude (lapse rate). Mountains use ridged noise for sharp peaks. Rivers carved by domain-warped noise near zero-crossings
+- **Alternatives**: Voronoi-based biome regions (hard edges), single noise axis (limited variety), hand-painted biome map (breaks infinite PCG)
+- **Consequences**: 10 distinct biomes emerge naturally. Smooth transitions at boundaries. Deterministic from seed. Temperature-altitude coupling creates snow caps automatically

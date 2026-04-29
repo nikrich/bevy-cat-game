@@ -1,5 +1,47 @@
 # Session Journal
 
+## 2026-04-29 -- Full gameplay loop: biomes, crafting, building, animals, particles, save/load
+
+**What was done:**
+- Built 10-biome system (temperature/moisture noise: ocean, beach, desert, grassland, meadow, forest, taiga, tundra, snow, mountain)
+- Mountains with ridged noise for dramatic peaks, snow caps
+- Water system: ocean + rivers with ambient wave animation
+- Prop sway: vegetation tilts away from player and springs back
+- Inventory with 15 item types (7 raw, 8 crafted)
+- Gathering system: proximity detection, E/click to collect, shrink animation
+- Crafting system: Tab menu, 8 recipes, ingredient checking
+- Building system: B to enter, mouse-aimed ghost preview, grid-snapped placement, R to rotate
+- NPC animals: 5 types per biome (rabbit, fox, deer, penguin, lizard), wander + flee AI
+- Particle effects: 5 types (leaves, fireflies, snowflakes, sand wisps, pollen), biome + time-of-day aware
+- Save/load: auto-save 30s, F5 manual, JSON format (player pos, inventory, buildings)
+- Input abstraction: unified GameInput resource, KB+mouse and gamepad support, cursor raycasting
+- HUD: inventory hotbar, crafting menu, build mode prompt, gather prompt with context hints
+- Attempted cat model animation integration (failed -- Blender 5.1 glTF export issue, see animation_pitfalls memory)
+- Smooth terrain snapping (lerp Y position)
+- Thicker terrain tiles (0.6) to prevent gaps
+
+**Key decisions:**
+- DEC-004 through DEC-006 recorded (chunks, props, day/night)
+- Input abstraction designed for gamepad from the start
+- Manual JSON save (no serde dependency)
+- Biome classification: temperature + moisture noise, altitude cooling
+
+**Files created:**
+- src/world/biome.rs, src/world/water.rs
+- src/input/mod.rs, src/inventory/mod.rs, src/gathering/mod.rs
+- src/crafting/mod.rs, src/building/mod.rs
+- src/animals/mod.rs, src/particles/mod.rs
+- src/save.rs, src/ui/mod.rs
+- assets/models/cat.glb (model works, animations don't)
+
+**Open threads:**
+- Cat model animations (need to validate GLB externally, try Blender 4.x)
+- Music and ambient audio not started
+- Discovery journal not started
+- Weather system not started
+- Crafting UI could be more polished (user feedback: "looks bad")
+- Water reflections/distortion not working well with tile-based approach
+
 ## 2026-04-29 -- Chunk terrain, props, and day/night cycle
 
 **What was done:**

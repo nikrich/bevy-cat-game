@@ -78,4 +78,44 @@
 - **Why**: Quick implementation path
 - **Fix when**: When optimizing memory/GPU usage
 - **Effort**: M
+- **Status**: Partially resolved -- props now use PropAssets struct with shared handles. Terrain still duplicates per chunk.
+
+## DEBT-009: Fragile JSON save format
+- **Added**: 2026-04-29
+- **Severity**: Medium
+- **Area**: save
+- **What**: Hand-written JSON serialization and string-based parsing. No schema validation.
+- **Why**: Avoided serde dependency (DEC-008)
+- **Fix when**: When save format grows beyond current 3 sections (player, inventory, buildings)
+- **Effort**: M
+- **Status**: Open
+
+## DEBT-010: Crafting UI needs polish
+- **Added**: 2026-04-29
+- **Severity**: Low
+- **Area**: ui
+- **What**: User feedback that crafting menu "looks bad" and wants "more intricate" crafter
+- **Why**: Built quickly with basic Bevy UI nodes
+- **Fix when**: Next UI pass
+- **Effort**: M
+- **Status**: Open
+
+## DEBT-011: No game states
+- **Added**: 2026-04-29
+- **Severity**: Medium
+- **Area**: core
+- **What**: No Loading/Menu/Playing/Paused state machine. Game goes straight to playing.
+- **Why**: MVP focus
+- **Fix when**: Before adding menus, pause screen, or loading screen
+- **Effort**: M
+- **Status**: Open
+
+## DEBT-012: WorldNoise reconstructed every frame
+- **Added**: 2026-04-29
+- **Severity**: Medium
+- **Area**: world/biome, player, animals
+- **What**: WorldNoise::new(seed) called in multiple systems every frame instead of being cached
+- **Why**: Quick implementation, Perlin::new is cheap but still wasteful
+- **Fix when**: When optimizing frame time
+- **Effort**: S
 - **Status**: Open
