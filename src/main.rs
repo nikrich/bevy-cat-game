@@ -16,6 +16,7 @@ mod world;
 
 use bevy::prelude::*;
 use bevy::window::WindowResolution;
+use bevy_egui::EguiPlugin;
 
 fn main() {
     App::new()
@@ -28,6 +29,7 @@ fn main() {
             ..default()
         }))
         .insert_resource(ClearColor(Color::srgb(0.54, 0.70, 0.52)))
+        .add_plugins(EguiPlugin::default())
         .add_plugins((
             state::StatePlugin,
             input::InputPlugin,

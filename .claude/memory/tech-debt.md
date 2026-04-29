@@ -120,6 +120,16 @@
 - **Effort**: S
 - **Status**: Resolved (2026-04-29) -- W0.2 made WorldNoise a `Resource` built once via `FromWorld` from `ChunkManager.seed`. All per-frame consumers now take `Res<WorldNoise>`
 
+## DEBT-015: Save format still hand-maintained (moonshine-save deferred)
+- **Added**: 2026-04-29
+- **Severity**: Low
+- **Area**: save
+- **What**: W0.11 (replace save.rs with moonshine-save) was tried and deferred. The current serde-JSON save in `save.rs` works and was extended in this same session for OS-aware paths (W0.12) and seed persistence (W0.13). Moonshine's main payoff is "new persistable components auto-serialize via reflection" — useful when many entities carry state, marginal when state is dominated by a few resources (Inventory/WorldMemory/Journal/ChunkManager.seed) and a small number of building entities
+- **Why**: Two extra costs surfaced. (1) Inventory/recipes use `ItemId` indices into a registry that rebuilds each session, so the save must persist by stable `save_key` strings — moonshine's reflection serializer would need a custom mapper, which is the bulk of what `save.rs` already does. (2) moonshine-save's on-disk format is RON, not JSON; landing it would amend DEC-015 (which committed to JSON for human-readability)
+- **Fix when**: Start of Phase 5 (NPC cats). Phase 5 adds ~10 persistable components per NPC and several archetypes — that's where the "new component → just `#[reflect(Save)]`" payoff actually starts compounding
+- **Effort**: M
+- **Status**: Open
+
 ## DEBT-014: Procedural atmosphere art-direction mismatch
 - **Added**: 2026-04-29
 - **Severity**: Low

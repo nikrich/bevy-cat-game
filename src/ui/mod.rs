@@ -1,4 +1,5 @@
 pub mod chrome;
+pub mod crafting_egui;
 
 use bevy::input::mouse::{MouseScrollUnit, MouseWheel};
 use bevy::prelude::*;
@@ -27,9 +28,6 @@ impl Plugin for GameUiPlugin {
                 (
                     update_gather_prompt,
                     update_inventory_display,
-                    update_crafting_menu,
-                    handle_crafting_clicks,
-                    handle_crafting_tab_clicks,
                     update_build_prompt,
                     update_build_hotbar,
                     handle_build_hotbar_clicks,
@@ -37,6 +35,11 @@ impl Plugin for GameUiPlugin {
                     scroll_hovered_panels,
                 ),
             );
+        // The crafting menu lives in egui now (W0.6). The Bevy UI tree is no
+        // longer spawned (see `spawn_ui`) and the old `update_crafting_menu`
+        // / `handle_crafting_clicks` / `handle_crafting_tab_clicks` systems
+        // have no entities to operate on.
+        crafting_egui::register(app);
     }
 }
 
@@ -157,7 +160,11 @@ fn spawn_ui(
         });
 
     spawn_inventory_bar(&mut commands, &assets, &asset_server, &registry);
-    spawn_crafting_menu(&mut commands, &assets, &asset_server, &registry, &recipes);
+    // The crafting menu lives in egui now (W0.6). `spawn_crafting_menu` is
+    // retained below so it can be revived if a Bevy UI fallback is ever
+    // needed, but it's no longer called.
+    let _ = spawn_crafting_menu;
+    let _ = (&recipes,);
     spawn_build_hotbar(&mut commands, &assets, &asset_server, &registry, &placeables);
 }
 
