@@ -5,9 +5,9 @@
 - **Severity**: Medium
 - **Area**: player
 - **What**: Player is a capsule primitive, not the actual cat model
-- **Why**: Cat .glb not yet provided
-- **Fix when**: User provides the cat model asset
-- **Effort**: S
+- **Why**: cat.glb exists in assets/models/ but Mixamo animations fail to play visually despite correct data. Likely Blender 5.1 glTF export issue. See feedback_animation_pitfalls.md in memory.
+- **Fix when**: Validate GLB in external viewer first, then retry. Consider Blender 4.x or pre-animated asset.
+- **Effort**: M
 - **Status**: Open
 
 ## DEBT-002: No chunk system
@@ -18,7 +18,7 @@
 - **Why**: MVP scaffold, get something on screen first
 - **Fix when**: Before adding more terrain features or props
 - **Effort**: L
-- **Status**: Open
+- **Status**: Resolved (2026-04-29) -- chunk system implemented in chunks.rs
 
 ## DEBT-003: No game states
 - **Added**: 2026-04-29
@@ -38,4 +38,44 @@
 - **Why**: MVP scaffold
 - **Fix when**: When adding save/load or world selection
 - **Effort**: S
+- **Status**: Open
+
+## DEBT-005: Systems using let-else instead of Result return
+- **Added**: 2026-04-29
+- **Severity**: Low
+- **Area**: player, camera
+- **What**: move_player and follow_player use `let Ok(...) else { return }` instead of `-> Result`
+- **Why**: Written before adopting the Bevy 0.16 fallible systems pattern
+- **Fix when**: Next time these systems are touched
+- **Effort**: S
+- **Status**: Open
+
+## DEBT-006: No test coverage
+- **Added**: 2026-04-29
+- **Severity**: Medium
+- **Area**: all
+- **What**: Zero tests -- no unit or integration tests
+- **Why**: MVP phase, systems are mostly wiring
+- **Fix when**: Before systems get complex enough to have subtle bugs
+- **Effort**: M
+- **Status**: Open
+
+## DEBT-007: Per-tile entities in chunks
+- **Added**: 2026-04-29
+- **Severity**: Medium
+- **Area**: world/terrain
+- **What**: Each 16x16 chunk spawns 256 individual Cuboid entities instead of a single baked mesh
+- **Why**: Simpler to implement, enables per-tile interaction (DEC-004)
+- **Fix when**: If profiling shows entity count is the bottleneck (likely at render distance > 4)
+- **Effort**: L
+- **Status**: Open
+
+## DEBT-008: Material/mesh duplication per chunk
+- **Added**: 2026-04-29
+- **Severity**: Medium
+- **Area**: world/terrain, world/props
+- **What**: Each chunk creates its own materials and meshes instead of sharing cached handles
+- **Why**: Quick implementation path
+- **Fix when**: When optimizing memory/GPU usage
+- **Effort**: M
 - **Status**: Open

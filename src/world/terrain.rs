@@ -1,31 +1,66 @@
 use bevy::prelude::*;
 use noise::{NoiseFn, Perlin};
 
-const CHUNK_SIZE: i32 = 32;
-const TILE_SIZE: f32 = 1.0;
+use super::chunks::{Chunk, CHUNK_SIZE};
 
-#[derive(Component)]
-pub struct Terrain;
+const TILE_SIZE: f32 = 1.0;
 
 #[derive(Component)]
 pub struct Tile {
     pub height: f32,
 }
 
-pub fn spawn_terrain(
-    mut commands: Commands,
-    mut meshes: ResMut<Assets<Mesh>>,
-    mut materials: ResMut<Assets<StandardMaterial>>,
-) {
-    let perlin = Perlin::new(42);
+/// Terrain height at a world-space position. Used by other systems (props, player snapping).
+pub fn terrain_height(perlin: &Perlin, world_x: f64, world_z: f64) -> f32 {
+    let nx = world_x * 0.05;
+    let nz = world_z * 0.05;
+
+    let height = perlin.get([nx, nz]) * 2.0
+        + perlin.get([nx * 2.0, nz * 2.0]) * 0.5
+        + perlin.get([nx * 4.0, nz * 4.0]) * 0.25;
+
+    height as f32
+}
+
+/// Quantize height to stepped increments for the low-poly look.
+pub fn step_height(height: f32) -> f32 {
+    (height * 4.0).round() / 4.0
+}
+
+/// Determine biome type from height (used by props system too).
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum BiomeKind {
+    Sand,
+    Dirt,
+    Grass,
+}
+
+pub fn biome_at_height(height: f32) -> BiomeKind {
+    if height < -0.5 {
+        BiomeKind::Sand
+    } else if height < -0.2 {
+        BiomeKind::Dirt
+    } else {
+        BiomeKind::Grass
+    }
+}
+
+pub fn spawn_chunk_terrain(
+    commands: &mut Commands,
+    meshes: &mut ResMut<Assets<Mesh>>,
+    materials: &mut ResMut<Assets<StandardMaterial>>,
+    chunk_x: i32,
+    chunk_z: i32,
+    seed: u32,
+) -> Entity {
+    let perlin = Perlin::new(seed);
 
     // Color palette matching the warm, earthy art style
     let grass_colors = [
-        Color::srgb(0.45, 0.65, 0.35), // dark grass
-        Color::srgb(0.55, 0.72, 0.40), // mid grass
-        Color::srgb(0.62, 0.78, 0.45), // light grass
+        Color::srgb(0.45, 0.65, 0.35),
+        Color::srgb(0.55, 0.72, 0.40),
+        Color::srgb(0.62, 0.78, 0.45),
     ];
-
     let dirt_color = Color::srgb(0.60, 0.48, 0.35);
     let sand_color = Color::srgb(0.82, 0.76, 0.62);
 
@@ -54,45 +89,47 @@ pub fn spawn_terrain(
         ..default()
     });
 
-    let terrain_entity = commands
+    let world_offset_x = chunk_x * CHUNK_SIZE;
+    let world_offset_z = chunk_z * CHUNK_SIZE;
+
+    let chunk_entity = commands
         .spawn((
-            Terrain,
+            Chunk {
+                x: chunk_x,
+                z: chunk_z,
+            },
             Transform::default(),
             Visibility::default(),
         ))
         .id();
 
-    for x in -CHUNK_SIZE..CHUNK_SIZE {
-        for z in -CHUNK_SIZE..CHUNK_SIZE {
-            let nx = x as f64 * 0.05;
-            let nz = z as f64 * 0.05;
+    for lx in 0..CHUNK_SIZE {
+        for lz in 0..CHUNK_SIZE {
+            let wx = world_offset_x + lx;
+            let wz = world_offset_z + lz;
 
-            // Layer noise for natural-looking terrain
-            let height = perlin.get([nx, nz]) * 2.0
-                + perlin.get([nx * 2.0, nz * 2.0]) * 0.5
-                + perlin.get([nx * 4.0, nz * 4.0]) * 0.25;
-            let height = height as f32;
+            let height = terrain_height(&perlin, wx as f64, wz as f64);
+            let biome = biome_at_height(height);
 
-            // Pick material based on height
-            let material = if height < -0.5 {
-                sand_material.clone()
-            } else if height < -0.2 {
-                dirt_material.clone()
-            } else {
-                // Vary grass shade with secondary noise
-                let shade_noise = perlin.get([nx * 3.0 + 100.0, nz * 3.0 + 100.0]);
-                let idx = if shade_noise < -0.3 {
-                    0
-                } else if shade_noise < 0.3 {
-                    1
-                } else {
-                    2
-                };
-                grass_materials[idx].clone()
+            let material = match biome {
+                BiomeKind::Sand => sand_material.clone(),
+                BiomeKind::Dirt => dirt_material.clone(),
+                BiomeKind::Grass => {
+                    let nx = wx as f64 * 0.05;
+                    let nz = wz as f64 * 0.05;
+                    let shade_noise = perlin.get([nx * 3.0 + 100.0, nz * 3.0 + 100.0]);
+                    let idx = if shade_noise < -0.3 {
+                        0
+                    } else if shade_noise < 0.3 {
+                        1
+                    } else {
+                        2
+                    };
+                    grass_materials[idx].clone()
+                }
             };
 
-            // Quantize height to give a low-poly stepped look
-            let step_height = (height * 4.0).round() / 4.0;
+            let sh = step_height(height);
 
             let child = commands
                 .spawn((
@@ -100,30 +137,16 @@ pub fn spawn_terrain(
                     Mesh3d(tile_mesh.clone()),
                     MeshMaterial3d(material),
                     Transform::from_xyz(
-                        x as f32 * TILE_SIZE,
-                        step_height * 0.5,
-                        z as f32 * TILE_SIZE,
+                        wx as f32 * TILE_SIZE,
+                        sh * 0.5,
+                        wz as f32 * TILE_SIZE,
                     ),
                 ))
                 .id();
 
-            commands.entity(terrain_entity).add_child(child);
+            commands.entity(chunk_entity).add_child(child);
         }
     }
 
-    // Ambient light for warm feel
-    commands.spawn((
-        DirectionalLight {
-            illuminance: 8000.0,
-            shadows_enabled: true,
-            color: Color::srgb(1.0, 0.95, 0.85),
-            ..default()
-        },
-        Transform::from_rotation(Quat::from_euler(
-            EulerRot::XYZ,
-            -std::f32::consts::FRAC_PI_4,
-            std::f32::consts::FRAC_PI_4,
-            0.0,
-        )),
-    ));
+    chunk_entity
 }

@@ -24,6 +24,11 @@
 - [2026-04-29] User provides all assets -- AI builds everything else end-to-end
 - [2026-04-29] Conventional Commits for version control
 
+## Architecture
+- [2026-04-29] Chunk system: 16x16 tiles, render distance 3, max 4 chunks loaded per frame
+- [2026-04-29] Props: noise-based placement (seeds 137, 251), biome-aware, children of chunk entities
+- [2026-04-29] Day/night: 12-min full cycle, 6 phases, starts at 8am, moonlight at night
+
 ## External resources
 
 ## Ideas parking lot

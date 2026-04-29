@@ -20,15 +20,15 @@ A peaceful, lifelong world-crafting game where you play as a bipedal cat explori
 1. [x] Basic terrain generation
 2. [x] Player movement (WASD)
 3. [x] Isometric camera follow
-4. [ ] Chunk-based infinite terrain
-5. [ ] Cat character model integration
-6. [ ] Props/decoration spawning (trees, rocks, flowers)
+4. [x] Chunk-based infinite terrain (16x16 chunks, render distance 3)
+5. [ ] Cat character model integration (cat.glb exists but animations don't work yet)
+6. [x] Props/decoration spawning (trees, rocks, flowers, mushrooms, bushes)
 7. [ ] Inventory system
 8. [ ] Gathering (pick up items from world)
 9. [ ] Crafting system
 10. [ ] Building/placement system
 11. [ ] Save/load world state
-12. [ ] Day/night cycle
+12. [x] Day/night cycle (12-min full cycle, 6 phases)
 13. [ ] Biome system
 14. [ ] Water and terrain features
 15. [ ] NPC animals

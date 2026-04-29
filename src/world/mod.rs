@@ -1,4 +1,7 @@
-mod terrain;
+pub mod chunks;
+pub mod daynight;
+pub mod props;
+pub mod terrain;
 
 use bevy::prelude::*;
 
@@ -6,6 +9,39 @@ pub struct WorldPlugin;
 
 impl Plugin for WorldPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(Startup, terrain::spawn_terrain);
+        app.init_resource::<chunks::ChunkManager>()
+            .init_resource::<daynight::WorldTime>()
+            .add_event::<chunks::ChunkLoaded>()
+            .add_systems(Startup, spawn_light)
+            .add_systems(
+                Update,
+                (
+                    chunks::track_player_chunk,
+                    chunks::load_nearby_chunks,
+                    chunks::unload_distant_chunks,
+                    props::spawn_chunk_props,
+                    daynight::advance_time,
+                    daynight::update_sun,
+                    daynight::update_sky_color,
+                    daynight::update_ambient_light,
+                ),
+            );
     }
+}
+
+fn spawn_light(mut commands: Commands) {
+    commands.spawn((
+        DirectionalLight {
+            illuminance: 8000.0,
+            shadows_enabled: true,
+            color: Color::srgb(1.0, 0.95, 0.85),
+            ..default()
+        },
+        Transform::from_rotation(Quat::from_euler(
+            EulerRot::XYZ,
+            -std::f32::consts::FRAC_PI_4,
+            std::f32::consts::FRAC_PI_4,
+            0.0,
+        )),
+    ));
 }
