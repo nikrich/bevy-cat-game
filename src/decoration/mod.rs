@@ -8,6 +8,7 @@ pub mod interior;
 pub mod move_tool;
 pub mod place_tool;
 pub mod placement;
+pub mod remove_tool;
 
 use crate::input::{Action, CursorState};
 
@@ -22,9 +23,17 @@ impl Plugin for DecorationPlugin {
                 interior::resolve_interior_spawns,
                 placement::update_preview,
                 place_tool::place_decoration,
+                remove_tool::remove_decoration,
+                hotbar_ui::select_tool_hotkeys,
             ),
         );
-        app.add_systems(EguiPrimaryContextPass, catalog_ui::draw_decoration_catalog);
+        app.add_systems(
+            EguiPrimaryContextPass,
+            (
+                catalog_ui::draw_decoration_catalog,
+                hotbar_ui::draw_decoration_hotbar,
+            ),
+        );
     }
 }
 
