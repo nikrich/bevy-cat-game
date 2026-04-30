@@ -205,7 +205,7 @@ mod attach_tests {
 
 use crate::edit::PlacedItem;
 use crate::input::{CursorHit, CursorState};
-use crate::items::{Form, ItemRegistry};
+use crate::items::{Form, InteriorCatalog, ItemRegistry};
 use crate::world::biome::WorldNoise;
 use crate::world::terrain::Terrain;
 use super::{DecorationMode, DecorationTool};
@@ -219,6 +219,7 @@ pub fn update_preview(
     terrain: Res<Terrain>,
     noise: Res<WorldNoise>,
     placeables: Res<crate::building::PlaceableItems>,
+    catalog: Res<InteriorCatalog>,
     mut preview_q: Query<(Entity, &mut Transform), With<DecorationPreview>>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
@@ -247,6 +248,7 @@ pub fn update_preview(
         &registry,
         &terrain,
         &noise,
+        &catalog,
     );
 
     if let Ok((_, mut tf)) = preview_q.single_mut() {
@@ -271,6 +273,13 @@ pub fn update_preview(
 
 /// Top-level placement decision. Calls `pick_attach_surface` then snaps
 /// XZ via `snap_to_fine_grid`. v1 -- no magnet anchors.
+///
+/// Lift / Y handling: most forms use `def.form.placement_lift()` directly
+/// (a flat per-form constant). `Form::Interior` items have varying GLB
+/// origins, so the lift is computed from their AABB via
+/// `interior_render_params` -- without this, every interior asset sinks
+/// into or floats above the surface depending on where the GLB author
+/// put the origin.
 pub fn compute_decoration_placement(
     cursor_world: Vec3,
     cursor_hit: Option<CursorHit>,
@@ -279,8 +288,21 @@ pub fn compute_decoration_placement(
     registry: &ItemRegistry,
     terrain: &Terrain,
     noise: &WorldNoise,
+    catalog: &InteriorCatalog,
 ) -> Vec3 {
-    let lift = def.form.placement_lift();
+    let lift = if matches!(def.form, Form::Interior) {
+        def.interior_name
+            .as_deref()
+            .and_then(|name| catalog.aabb_for(name))
+            .map(|aabb| {
+                let scale = def.form.placement_scale();
+                let (_, _, effective) = super::interior::interior_render_params(def, aabb);
+                scale * effective.size().y * 0.5
+            })
+            .unwrap_or_else(|| def.form.placement_lift())
+    } else {
+        def.form.placement_lift()
+    };
 
     let input = if let Some(hit) = cursor_hit {
         if let Ok((tf, building)) = placed_q.get(hit.entity) {

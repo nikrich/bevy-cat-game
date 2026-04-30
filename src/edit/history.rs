@@ -75,12 +75,14 @@ pub struct PieceRef {
     pub entity: Option<Entity>,
 }
 
-/// Ctrl+Z = undo. Ctrl+Shift+Z (or Ctrl+Y) = redo. Only fires while build
-/// mode is active so the chord doesn't collide with non-build undoables.
+/// Ctrl+Z = undo. Ctrl+Shift+Z (or Ctrl+Y) = redo. Fires while build OR
+/// decoration mode is active -- both modes share the same EditHistory
+/// stack, so undo / redo work across mode swaps.
 #[allow(clippy::too_many_arguments)]
 fn undo_redo_hotkeys(
     keyboard: Res<ButtonInput<KeyCode>>,
     build_mode: Option<Res<BuildMode>>,
+    decoration_mode: Option<Res<crate::decoration::DecorationMode>>,
     mut history: ResMut<EditHistory>,
     mut commands: Commands,
     registry: Res<ItemRegistry>,
@@ -92,7 +94,7 @@ fn undo_redo_hotkeys(
     placed_q: Query<(Entity, &Transform, &PlacedItem)>,
     catalog: Res<InteriorCatalog>,
 ) {
-    if build_mode.is_none() {
+    if build_mode.is_none() && decoration_mode.is_none() {
         return;
     }
     let ctrl = keyboard.pressed(KeyCode::ControlLeft)

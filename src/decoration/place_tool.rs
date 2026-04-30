@@ -58,6 +58,7 @@ pub fn place_decoration(
         &registry,
         &terrain,
         &noise,
+        &catalog,
     );
     let tf = Transform::from_translation(pos)
         .with_rotation(Quat::from_rotation_y(mode.rotation_radians));
