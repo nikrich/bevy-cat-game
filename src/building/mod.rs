@@ -3,7 +3,6 @@ use bevy::prelude::*;
 
 pub mod catalog_ui;
 pub mod collision;
-pub mod interior;
 pub mod placement;
 pub mod ui;
 
@@ -46,7 +45,6 @@ impl Plugin for BuildingPlugin {
                     toggle_xray,
                     update_preview,
                     place_building,
-                    interior::resolve_interior_spawns,
                 ),
             );
         collision::register(app);
@@ -145,10 +143,10 @@ impl BuildMode {
 }
 
 pub use crate::edit::PlacedItem;
-pub use interior::InteriorSpawnRequest;
+pub use crate::decoration::interior::InteriorSpawnRequest;
 
 #[derive(Component)]
-pub(super) struct BuildPreview;
+pub(crate) struct BuildPreview;
 
 fn toggle_build_mode(
     mut commands: Commands,
@@ -297,7 +295,7 @@ pub fn refresh_build_preview(
             let (child_offset, child_scale_mul) = interior
                 .aabb_local
                 .map(|aabb| {
-                    let (offset, mul, _eff) = interior::interior_render_params(def, aabb);
+                    let (offset, mul, _eff) = crate::decoration::interior::interior_render_params(def, aabb);
                     (offset, mul)
                 })
                 .unwrap_or((Vec3::ZERO, Vec3::ONE));
@@ -755,10 +753,10 @@ fn interior_preview_anchor(
     let def = registry.get(item)?;
     let name = def.interior_name.as_ref()?;
     let aabb = catalog.aabb_for(name)?;
-    let (pos, footprint) = interior::compute_interior_placement(
+    let (pos, footprint) = crate::decoration::interior::compute_interior_placement(
         cursor_world, cursor_hit, def, aabb, placed_q, registry, terrain, noise,
     );
-    let valid = interior::footprint_clear(pos, footprint, placed_q, registry, interior::blocking_rule_for(def));
+    let valid = crate::decoration::interior::footprint_clear(pos, footprint, placed_q, registry, crate::decoration::interior::blocking_rule_for(def));
     Some((pos, rotation, valid))
 }
 
@@ -1354,10 +1352,10 @@ fn place_single(
         };
         let Some(name) = def.interior_name.as_ref() else { return };
         let Some(aabb) = catalog.aabb_for(name) else { return };
-        let (pos, footprint) = interior::compute_interior_placement(
+        let (pos, footprint) = crate::decoration::interior::compute_interior_placement(
             cursor_world, cursor_hit, def, aabb, placed_q, registry, terrain, noise,
         );
-        if !interior::footprint_clear(pos, footprint, placed_q, registry, interior::blocking_rule_for(def)) {
+        if !crate::decoration::interior::footprint_clear(pos, footprint, placed_q, registry, crate::decoration::interior::blocking_rule_for(def)) {
             // Overlap — refuse silently. Ghost is already showing red.
             return;
         }
@@ -1469,7 +1467,7 @@ pub fn spawn_placed_building(
         let (child_offset, child_scale_mul) = interior
             .aabb_local
             .map(|aabb| {
-                let (offset, mul, _eff) = interior::interior_render_params(def, aabb);
+                let (offset, mul, _eff) = crate::decoration::interior::interior_render_params(def, aabb);
                 (offset, mul)
             })
             .unwrap_or((Vec3::ZERO, Vec3::ONE));

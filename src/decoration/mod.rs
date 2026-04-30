@@ -13,7 +13,13 @@ pub struct DecorationPlugin;
 
 impl Plugin for DecorationPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(Update, toggle_decoration_mode);
+        app.add_systems(
+            Update,
+            (
+                toggle_decoration_mode,
+                interior::resolve_interior_spawns,
+            ),
+        );
     }
 }
 
