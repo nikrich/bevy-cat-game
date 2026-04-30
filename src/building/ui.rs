@@ -12,7 +12,7 @@ use super::{
     refresh_build_preview, BuildMode, BuildTool, PlaceableItems, PlacedBuilding,
 };
 use crate::inventory::{Inventory, InventoryChanged};
-use crate::items::{ItemRegistry, ItemTags};
+use crate::items::{InteriorCatalog, ItemRegistry, ItemTags};
 
 const PARCHMENT: egui::Color32 = egui::Color32::from_rgb(54, 38, 24);
 const GOLD: egui::Color32 = egui::Color32::from_rgb(220, 168, 76);
@@ -48,6 +48,7 @@ fn draw_build_tool_hotbar(
     mut inventory: ResMut<Inventory>,
     mut inv_events: MessageWriter<InventoryChanged>,
     placed_q: Query<(Entity, &Transform, &PlacedBuilding)>,
+    catalog: Res<InteriorCatalog>,
 ) -> Result {
     let Some(mode) = build_mode else { return Ok(()) };
     let ctx = contexts.ctx_mut()?;
@@ -105,6 +106,7 @@ fn draw_build_tool_hotbar(
                         &mut materials,
                         &mut inventory,
                         &mut inv_events,
+                        &catalog,
                     );
                 }
                 let redo_btn = egui::Button::new(
@@ -121,6 +123,7 @@ fn draw_build_tool_hotbar(
                         &mut inventory,
                         &mut inv_events,
                         &placed_q,
+                        &catalog,
                     );
                 }
                 ui.colored_label(GOLD_DIM, "Ctrl+Z / Ctrl+Shift+Z");
@@ -130,11 +133,19 @@ fn draw_build_tool_hotbar(
     Ok(())
 }
 
-/// Right-side decoration catalog — DECORATION + FURNITURE placeables in
-/// a clickable list. Selecting one switches BuildMode.tool to Place and
-/// snaps mode.selected to that item. Always visible while in build mode
-/// so the player can flip between cubes (via the bottom tool palette
-/// + [/]/Q/E/scroll) and decorations (via this panel) without a chord.
+/// Right-side decoration catalog — DECORATION + FURNITURE placeables
+/// grouped by category. Handles ~1000 items via collapsing category
+/// headers and a scrollable area. A text-search box filters by display
+/// name. "Other" group at the top holds the hand-authored decorations
+/// (Bed, Chest, Lantern, etc.) that aren't part of the interior catalog.
+#[derive(Resource, Default)]
+pub struct DecorationCatalogState {
+    /// Per-category open/closed UI state. Persists between frames so a
+    /// player who collapses a section keeps it collapsed.
+    pub open: std::collections::HashMap<String, bool>,
+    pub search: String,
+}
+
 #[allow(clippy::too_many_arguments)]
 fn draw_decoration_catalog(
     mut contexts: EguiContexts,
@@ -145,48 +156,151 @@ fn draw_decoration_catalog(
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
+    catalog: Res<InteriorCatalog>,
+    mut state: Local<DecorationCatalogState>,
 ) -> Result {
     let Some(mut mode) = build_mode else { return Ok(()) };
     let ctx = contexts.ctx_mut()?;
 
+    // Group decoration placeables by category. "Other" collects the
+    // hand-authored items that don't carry an interior_category (Bed,
+    // Lantern, etc.). Sort categories alphabetically; "Other" pinned
+    // first because it has the most-recognisable names.
+    let mut groups: std::collections::HashMap<String, Vec<(usize, &str)>> = std::collections::HashMap::new();
+    for (idx, item_id) in placeables.0.iter().enumerate() {
+        let Some(def) = registry.get(*item_id) else { continue };
+        let is_decor = def.tags.contains(ItemTags::DECORATION)
+            || def.tags.contains(ItemTags::FURNITURE);
+        if !is_decor {
+            continue;
+        }
+        let cat = def
+            .interior_category
+            .clone()
+            .unwrap_or_else(|| "other".to_string());
+        groups.entry(cat).or_default().push((idx, def.display_name.as_str()));
+    }
+    let mut sorted_groups: Vec<(String, Vec<(usize, &str)>)> = groups.into_iter().collect();
+    sorted_groups.sort_by(|a, b| {
+        // "other" first, then alphabetical.
+        match (a.0.as_str(), b.0.as_str()) {
+            ("other", _) => std::cmp::Ordering::Less,
+            (_, "other") => std::cmp::Ordering::Greater,
+            (a, b) => a.cmp(b),
+        }
+    });
+
     egui::Window::new("build_decoration_catalog")
         .anchor(egui::Align2::RIGHT_TOP, [-16.0, 80.0])
         .collapsible(false)
-        .resizable(false)
+        .resizable(true)
+        .default_width(220.0)
+        .min_width(200.0)
+        .max_width(280.0)
+        .default_height(520.0)
         .title_bar(false)
         .frame(panel_frame())
         .show(ctx, |ui| {
+            ui.set_max_height(520.0);
             ui.colored_label(GOLD, "Decorations");
             ui.add_space(4.0);
-            for (idx, item_id) in placeables.0.iter().enumerate() {
-                let Some(def) = registry.get(*item_id) else { continue };
-                let is_decor = def.tags.contains(ItemTags::DECORATION)
-                    || def.tags.contains(ItemTags::FURNITURE);
-                if !is_decor {
-                    continue;
-                }
-                let active = idx == mode.selected && mode.tool == BuildTool::Place;
-                let text = if active {
-                    egui::RichText::new(&def.display_name).color(GOLD).strong()
-                } else {
-                    egui::RichText::new(&def.display_name).color(TEXT_DIM)
-                };
-                if ui.add(egui::Button::new(text).frame(false)).clicked() {
-                    mode.tool = BuildTool::Place;
-                    mode.selected = idx;
-                    refresh_build_preview(
-                        &mut commands,
-                        &mut mode,
-                        *item_id,
-                        &registry,
-                        &asset_server,
-                        &mut meshes,
-                        &mut materials,
-                    );
-                }
-            }
+            ui.horizontal(|ui| {
+                ui.colored_label(GOLD_DIM, "🔎");
+                ui.add(
+                    egui::TextEdit::singleline(&mut state.search)
+                        .desired_width(160.0)
+                        .hint_text("filter…"),
+                );
+            });
+            ui.separator();
+
+            let search_lower = state.search.to_lowercase();
+            let has_filter = !search_lower.is_empty();
+
+            egui::ScrollArea::vertical()
+                .auto_shrink([false; 2])
+                .show(ui, |ui| {
+                    for (cat, items) in sorted_groups {
+                        // Filter items first; skip empty categories.
+                        let visible: Vec<&(usize, &str)> = items
+                            .iter()
+                            .filter(|(_, name)| {
+                                !has_filter || name.to_lowercase().contains(&search_lower)
+                            })
+                            .collect();
+                        if visible.is_empty() {
+                            continue;
+                        }
+
+                        let header = format!("{} ({})", category_label(&cat), visible.len());
+                        // When a filter is active, force categories open
+                        // so the player can see matches without expanding.
+                        let default_open = has_filter || cat == "other";
+                        let entry = state.open.entry(cat.clone()).or_insert(default_open);
+                        if has_filter {
+                            *entry = true;
+                        }
+                        let resp = egui::CollapsingHeader::new(
+                            egui::RichText::new(header).color(GOLD).strong(),
+                        )
+                        .default_open(*entry)
+                        .open(if has_filter { Some(true) } else { None })
+                        .show(ui, |ui| {
+                            for (idx, display) in &visible {
+                                let active = *idx == mode.selected
+                                    && mode.tool == BuildTool::Place;
+                                let text = if active {
+                                    egui::RichText::new(*display).color(GOLD).strong()
+                                } else {
+                                    egui::RichText::new(*display).color(TEXT_DIM)
+                                };
+                                if ui
+                                    .add(egui::Button::new(text).frame(false))
+                                    .clicked()
+                                {
+                                    let item_id = placeables.0[*idx];
+                                    mode.tool = BuildTool::Place;
+                                    mode.selected = *idx;
+                                    refresh_build_preview(
+                                        &mut commands,
+                                        &mut mode,
+                                        item_id,
+                                        &registry,
+                                        &asset_server,
+                                        &mut meshes,
+                                        &mut materials,
+                                        &catalog,
+                                    );
+                                }
+                            }
+                        });
+                        // Persist user's collapse state when no filter.
+                        if !has_filter {
+                            *state.open.entry(cat).or_insert(default_open) =
+                                resp.fully_open();
+                        }
+                    }
+                });
         });
 
     Ok(())
+}
+
+/// `"floor_lamp"` -> `"Floor Lamp"`. Just a Title-Case prettifier.
+fn category_label(raw: &str) -> String {
+    raw.replace('_', " ")
+        .split_whitespace()
+        .map(|w| {
+            let mut c = w.chars();
+            match c.next() {
+                None => String::new(),
+                Some(f) => f
+                    .to_uppercase()
+                    .chain(c.flat_map(char::to_lowercase))
+                    .collect::<String>(),
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 

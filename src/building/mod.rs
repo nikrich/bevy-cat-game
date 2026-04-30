@@ -9,9 +9,11 @@ pub use history::{apply_redo, apply_undo, BuildHistory, BuildOp, PieceRef};
 
 use leafwing_input_manager::prelude::ActionState;
 
+use bevy::gltf::{Gltf, GltfMesh, GltfNode};
+
 use crate::input::{Action, CursorHit, CursorState};
 use crate::inventory::{Inventory, InventoryChanged};
-use crate::items::{Form, ItemId, ItemRegistry, ItemTags, PlacementStyle};
+use crate::items::{Form, InteriorCatalog, ItemId, ItemRegistry, ItemTags, PlacementStyle};
 use crate::player::Player;
 use crate::world::biome::WorldNoise;
 use crate::world::terrain::Terrain;
@@ -35,6 +37,7 @@ impl Plugin for BuildingPlugin {
                     cycle_build_item,
                     update_preview,
                     place_building,
+                    resolve_interior_spawns,
                 ),
             );
         collision::register(app);
@@ -101,7 +104,7 @@ const WALL_LENGTH: f32 = 1.0;
 const OCCUPIED_RADIUS: f32 = 0.4;
 const OCCUPIED_Y: f32 = 0.6;
 
-fn init_placeable_items(
+pub fn init_placeable_items(
     registry: Res<ItemRegistry>,
     mut placeables: ResMut<PlaceableItems>,
 ) {
@@ -133,6 +136,10 @@ pub struct BuildMode {
     /// session, repositioned to the hit entity each frame, hidden via
     /// `HIDE_Y` when not needed.
     pub remove_highlight: Option<Entity>,
+    /// Pieces stamped during the current paint drag (`PlacementStyle::Paint`,
+    /// e.g. floors). Flushed into a single `BuildOp::Placed` history entry
+    /// when the mouse is released so one drag = one undo.
+    pub paint_batch: Vec<PieceRef>,
 }
 
 impl BuildMode {
@@ -148,6 +155,16 @@ pub struct PlacedBuilding {
 
 #[derive(Component)]
 struct BuildPreview;
+
+/// Marker for an entity whose interior mesh+material are pending GLB
+/// load. `resolve_interior_spawns` polls these and once the named node
+/// resolves, spawns Mesh3d+MeshMaterial3d children for each primitive.
+/// Removed from the entity once resolved.
+#[derive(Component)]
+pub struct InteriorSpawnRequest {
+    pub gltf: Handle<Gltf>,
+    pub node_name: String,
+}
 
 /// Resolve the ghost chain's direction and length from cursor delta to
 /// anchor on the **horizontal plane** (X/Z only). Vertical chains were
@@ -305,20 +322,23 @@ fn is_position_occupied(
 fn toggle_build_mode(
     mut commands: Commands,
     action_state: Res<ActionState<Action>>,
-    build_mode: Option<Res<BuildMode>>,
+    build_mode: Option<ResMut<BuildMode>>,
     inventory: Res<Inventory>,
     placeables: Res<PlaceableItems>,
     registry: Res<ItemRegistry>,
     asset_server: Res<AssetServer>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
+    catalog: Res<InteriorCatalog>,
+    mut history: ResMut<BuildHistory>,
 ) {
     if !action_state.just_pressed(&Action::ToggleBuild) {
         return;
     }
 
     match build_mode {
-        Some(mode) => {
+        Some(mut mode) => {
+            flush_paint_batch(&mut mode, &mut history);
             if let Some(preview) = mode.preview_entity {
                 commands.entity(preview).despawn();
             }
@@ -355,6 +375,7 @@ fn toggle_build_mode(
                 line_anchor: None,
                 line_ghosts: Vec::new(),
                 remove_highlight: Some(spawn_remove_highlight(&mut commands, &mut meshes, &mut materials)),
+                paint_batch: Vec::new(),
             };
             if let Some(item) = placeables.0.get(selected).copied() {
                 // Always spawn a ghost on entry. The previous gate on
@@ -372,6 +393,7 @@ fn toggle_build_mode(
                     &asset_server,
                     &mut meshes,
                     &mut materials,
+                    &catalog,
                 );
             }
             commands.insert_resource(mode);
@@ -414,6 +436,7 @@ pub fn refresh_build_preview(
     asset_server: &AssetServer,
     meshes: &mut ResMut<Assets<Mesh>>,
     materials: &mut ResMut<Assets<StandardMaterial>>,
+    catalog: &InteriorCatalog,
 ) {
     if let Some(preview) = mode.preview_entity.take() {
         commands.entity(preview).despawn();
@@ -426,6 +449,29 @@ pub fn refresh_build_preview(
     let Some(def) = registry.get(item) else { return };
     let scale = def.form.placement_scale();
     let xform = Transform::from_xyz(0.0, -100.0, 0.0).with_scale(Vec3::splat(scale));
+
+    // Interior items: spawn the preview as an InteriorSpawnRequest so the
+    // ghost shows the actual asset (resolved async by the same system that
+    // resolves placed pieces). The mesh appears once the parent GLB loads.
+    if let Some(name) = &def.interior_name {
+        if let Some(idx) = catalog.by_name.get(name).copied() {
+            let interior = &catalog.items[idx];
+            let gltf = catalog.gltf_handle(interior.source).clone();
+            let preview = commands
+                .spawn((
+                    BuildPreview,
+                    xform,
+                    Visibility::Inherited,
+                    InteriorSpawnRequest {
+                        gltf,
+                        node_name: name.clone(),
+                    },
+                ))
+                .id();
+            mode.preview_entity = Some(preview);
+            return;
+        }
+    }
 
     let preview = if let Some(path) = def.form.scene_path() {
         commands
@@ -480,6 +526,7 @@ fn select_build_tool(
 /// the decoration catalog UI, not the keyboard cycle. Item selection is
 /// meaningless for Remove (clicks despawn whatever's under the cursor),
 /// so we silently ignore cycling in other tools.
+#[allow(clippy::too_many_arguments)]
 fn select_build_item(
     mut commands: Commands,
     action_state: Res<ActionState<Action>>,
@@ -490,6 +537,7 @@ fn select_build_item(
     asset_server: Res<AssetServer>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
+    catalog: Res<InteriorCatalog>,
 ) {
     let Some(mode) = &mut build_mode else { return };
     if mode.tool != BuildTool::Place {
@@ -515,6 +563,7 @@ fn select_build_item(
             &asset_server,
             &mut meshes,
             &mut materials,
+            &catalog,
         );
     }
 
@@ -527,6 +576,7 @@ fn select_build_item(
 /// Mirrors `world::edit::cycle_paint_biome` for the Paint brush — players
 /// who learned the bracket-cycle in terrain editing get the same gesture
 /// here. Q/E and the scroll wheel still work via `select_build_item`.
+#[allow(clippy::too_many_arguments)]
 fn cycle_build_item(
     mut commands: Commands,
     keys: Res<ButtonInput<KeyCode>>,
@@ -537,6 +587,7 @@ fn cycle_build_item(
     asset_server: Res<AssetServer>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
+    catalog: Res<InteriorCatalog>,
 ) {
     let Some(mode) = &mut build_mode else { return };
     if mode.tool != BuildTool::Place {
@@ -562,6 +613,7 @@ fn cycle_build_item(
             &asset_server,
             &mut meshes,
             &mut materials,
+            &catalog,
         );
     }
 }
@@ -607,6 +659,7 @@ fn switch_selected_item(
     asset_server: &AssetServer,
     meshes: &mut ResMut<Assets<Mesh>>,
     materials: &mut ResMut<Assets<StandardMaterial>>,
+    catalog: &InteriorCatalog,
 ) {
     if idx == mode.selected {
         return;
@@ -619,7 +672,7 @@ fn switch_selected_item(
     if let Some(def) = registry.get(item) {
         info!("[build] selected {} ({:?})", def.display_name, def.form);
     }
-    refresh_build_preview(commands, mode, item, registry, asset_server, meshes, materials);
+    refresh_build_preview(commands, mode, item, registry, asset_server, meshes, materials, catalog);
 }
 
 const GHOST_VALID: Color = Color::srgba(0.45, 1.0, 0.55, 0.55);
@@ -637,8 +690,12 @@ fn update_preview(
     registry: Res<ItemRegistry>,
     inventory: Res<Inventory>,
     placed_q: Query<(&Transform, &PlacedBuilding), Without<BuildPreview>>,
+    // Material is optional so interior previews (which use a SceneRoot or
+    // an InteriorSpawnRequest with the material attached as a child) get
+    // their Transform updated without us trying to tint a material they
+    // don't carry on the parent entity.
     mut previews_q: Query<
-        (&mut Transform, &MeshMaterial3d<StandardMaterial>),
+        (&mut Transform, Option<&MeshMaterial3d<StandardMaterial>>),
         With<BuildPreview>,
     >,
     mut materials: ResMut<Assets<StandardMaterial>>,
@@ -747,7 +804,7 @@ fn update_single_preview(
     registry: &ItemRegistry,
     placed_q: &Query<(&Transform, &PlacedBuilding), Without<BuildPreview>>,
     previews_q: &mut Query<
-        (&mut Transform, &MeshMaterial3d<StandardMaterial>),
+        (&mut Transform, Option<&MeshMaterial3d<StandardMaterial>>),
         With<BuildPreview>,
     >,
     materials: &mut ResMut<Assets<StandardMaterial>>,
@@ -767,10 +824,14 @@ fn update_single_preview(
     preview_tf.translation = final_pos;
     preview_tf.rotation = Quat::from_rotation_y(mode.rotation);
 
-    // Single-placement is always valid — `place_y` already stacks above any
-    // existing piece in the cell, so the ghost never overlaps geometry.
-    if let Some(mat) = materials.get_mut(&preview_mat.0) {
-        mat.base_color = GHOST_VALID;
+    // Tint the ghost green when the preview entity carries its own
+    // StandardMaterial (procedural cubes / walls). Interior previews use
+    // a SceneRoot or InteriorSpawnRequest with materials on child
+    // entities — those render with their authored materials, no tint.
+    if let Some(mat_handle) = preview_mat {
+        if let Some(mat) = materials.get_mut(&mat_handle.0) {
+            mat.base_color = GHOST_VALID;
+        }
     }
 }
 
@@ -783,7 +844,7 @@ fn update_line_preview(
     inventory: &Inventory,
     placed_q: &Query<(&Transform, &PlacedBuilding), Without<BuildPreview>>,
     previews_q: &mut Query<
-        (&mut Transform, &MeshMaterial3d<StandardMaterial>),
+        (&mut Transform, Option<&MeshMaterial3d<StandardMaterial>>),
         With<BuildPreview>,
     >,
     materials: &mut ResMut<Assets<StandardMaterial>>,
@@ -852,7 +913,7 @@ fn update_line_preview(
                 Some(_) => *tx,
                 None => Transform::from_xyz(0.0, HIDE_Y, 0.0),
             };
-            if let Some(c) = tint {
+            if let (Some(c), Some(mat_handle)) = (tint, mat_handle) {
                 if let Some(mat) = materials.get_mut(&mat_handle.0) {
                     mat.base_color = c;
                 }
@@ -888,27 +949,37 @@ fn place_building(
     noise: Res<WorldNoise>,
     terrain: Res<Terrain>,
     mut history: ResMut<BuildHistory>,
+    catalog: Res<InteriorCatalog>,
 ) {
     let Some(mut mode) = build_mode else { return };
     if inputs.cursor.pointer_over_ui || inputs.crafting.open {
+        // Pointer-over-UI cancels any in-progress paint drag and flushes
+        // whatever was painted so far — otherwise the next mouse-up over
+        // world geometry would group unrelated stamps with the canceled run.
+        flush_paint_batch(&mut mode, &mut history);
         return;
     }
 
-    // Single-shot click only — no held-mouse stamping. Space (and gamepad
-    // South via Action::Place) is treated identically to a left click.
     let click = inputs.mouse.just_pressed(MouseButton::Left)
         || inputs.action.just_pressed(&Action::Place);
-    if !click {
-        return;
-    }
+    let held = inputs.mouse.pressed(MouseButton::Left);
+    let released = inputs.mouse.just_released(MouseButton::Left);
 
-    let Some(cursor_world) = inputs.cursor.cursor_world else { return };
+    let Some(cursor_world) = inputs.cursor.cursor_world else {
+        if released {
+            flush_paint_batch(&mut mode, &mut history);
+        }
+        return;
+    };
 
     // Route on the active tool. Place / Remove for now; future Move, Pick,
     // and door-into-wall Replace plug in here without disturbing the rest
     // of the pipeline.
     match mode.tool {
         BuildTool::Remove => {
+            if !click {
+                return;
+            }
             remove_clicked_piece(
                 &mut commands,
                 cursor_world,
@@ -924,13 +995,49 @@ fn place_building(
             let Some(item) = placeables.0.get(mode.selected).copied() else { return };
             let Some(def) = registry.get(item) else { return };
             let form = def.form;
+            let style = form.placement_style();
             // Plain click = single cube. Shift+click on a line-style form
             // (walls) opens the line tool: first shift+click sets anchor,
             // second shift+click confirms the chain. Releasing Shift in
             // `update_preview` clears any in-progress anchor and ghosts.
             let shift = inputs.keyboard.pressed(KeyCode::ShiftLeft)
                 || inputs.keyboard.pressed(KeyCode::ShiftRight);
-            if shift && form.placement_style() == PlacementStyle::Line {
+
+            // Paint forms (floors): every frame the mouse is held, stamp at
+            // the cursor cell. Skips already-occupied cells so dragging back
+            // and forth doesn't double-place. The whole drag becomes one
+            // undo entry, flushed on mouse release below.
+            if style == PlacementStyle::Paint {
+                if held {
+                    paint_stamp(
+                        &mut commands,
+                        &mut mode,
+                        item,
+                        form,
+                        cursor_world,
+                        inputs.cursor.cursor_hit,
+                        &registry,
+                        &asset_server,
+                        &mut inventory,
+                        &mut inv_events,
+                        &placed_q,
+                        &mut meshes,
+                        &mut materials,
+                        &terrain,
+                        &noise,
+                        &catalog,
+                    );
+                }
+                if released {
+                    flush_paint_batch(&mut mode, &mut history);
+                }
+                return;
+            }
+
+            if !click {
+                return;
+            }
+            if shift && style == PlacementStyle::Line {
                 place_wall_line(
                     &mut commands,
                     &mut mode,
@@ -947,6 +1054,7 @@ fn place_building(
                     &terrain,
                     &noise,
                     &mut history,
+                    &catalog,
                 );
             } else {
                 place_single(
@@ -966,10 +1074,70 @@ fn place_building(
                     &terrain,
                     &noise,
                     &mut history,
+                    &catalog,
                 );
             }
         }
     }
+}
+
+/// Paint a single tile at the cursor cell if it's not already occupied.
+/// Pieces accumulate in `mode.paint_batch` and are flushed into one
+/// `BuildOp::Placed` entry by `flush_paint_batch` on mouse release.
+#[allow(clippy::too_many_arguments)]
+fn paint_stamp(
+    commands: &mut Commands,
+    mode: &mut BuildMode,
+    item: ItemId,
+    form: Form,
+    cursor_world: Vec3,
+    cursor_hit: Option<CursorHit>,
+    registry: &ItemRegistry,
+    asset_server: &AssetServer,
+    inventory: &mut Inventory,
+    inv_events: &mut MessageWriter<InventoryChanged>,
+    placed_q: &Query<(&Transform, &PlacedBuilding), Without<BuildPreview>>,
+    meshes: &mut ResMut<Assets<Mesh>>,
+    materials: &mut ResMut<Assets<StandardMaterial>>,
+    terrain: &Terrain,
+    noise: &WorldNoise,
+    catalog: &InteriorCatalog,
+) {
+    if !INFINITE_RESOURCES && inventory.count(item) == 0 {
+        return;
+    }
+    let pos =
+        compute_placement(cursor_world, cursor_hit, form, registry, placed_q, terrain, noise);
+    if is_position_occupied(pos, placed_q) {
+        return;
+    }
+    let transform =
+        Transform::from_translation(pos).with_rotation(Quat::from_rotation_y(mode.rotation));
+    let new_entity = spawn_placed_building(
+        commands, registry, asset_server, meshes, materials, catalog, item, transform,
+    );
+    let Some(entity) = new_entity else { return };
+    mode.paint_batch.push(PieceRef {
+        item,
+        transform,
+        entity: Some(entity),
+    });
+    if !INFINITE_RESOURCES {
+        let entry = inventory.items.entry(item).or_insert(0);
+        *entry = entry.saturating_sub(1);
+        inv_events.write(InventoryChanged {
+            item,
+            new_count: inventory.count(item),
+        });
+    }
+}
+
+fn flush_paint_batch(mode: &mut BuildMode, history: &mut BuildHistory) {
+    if mode.paint_batch.is_empty() {
+        return;
+    }
+    let batch = std::mem::take(&mut mode.paint_batch);
+    history.record(BuildOp::Placed(batch));
 }
 
 /// Remove tool — find the placed piece under the cursor (raycast hit
@@ -1030,6 +1198,7 @@ fn place_wall_line(
     terrain: &Terrain,
     noise: &WorldNoise,
     history: &mut BuildHistory,
+    catalog: &InteriorCatalog,
 ) {
     match mode.line_anchor {
         None => {
@@ -1061,6 +1230,7 @@ fn place_wall_line(
                     asset_server,
                     meshes,
                     materials,
+                    catalog,
                     item,
                     *tx,
                 );
@@ -1128,6 +1298,7 @@ fn place_single(
     terrain: &Terrain,
     noise: &WorldNoise,
     history: &mut BuildHistory,
+    catalog: &InteriorCatalog,
 ) {
     if !INFINITE_RESOURCES && inventory.count(item) == 0 {
         return;
@@ -1142,7 +1313,7 @@ fn place_single(
         Transform::from_translation(pos).with_rotation(Quat::from_rotation_y(mode.rotation));
 
     let new_entity = spawn_placed_building(
-        commands, registry, asset_server, meshes, materials, item, transform,
+        commands, registry, asset_server, meshes, materials, catalog, item, transform,
     );
     if let Some(entity) = new_entity {
         history.record(BuildOp::Placed(vec![PieceRef {
@@ -1178,6 +1349,7 @@ fn cancel_placing(
     keyboard: Res<ButtonInput<KeyCode>>,
     mouse: Res<ButtonInput<MouseButton>>,
     build_mode: Option<ResMut<BuildMode>>,
+    mut history: ResMut<BuildHistory>,
 ) {
     let cancel = keyboard.just_pressed(KeyCode::Escape)
         || mouse.just_pressed(MouseButton::Right);
@@ -1194,6 +1366,7 @@ fn cancel_placing(
         return;
     }
 
+    flush_paint_batch(&mut mode, &mut history);
     if let Some(preview) = mode.preview_entity {
         commands.entity(preview).despawn();
     }
@@ -1206,39 +1379,6 @@ fn cancel_placing(
     commands.remove_resource::<BuildMode>();
 }
 
-/// Public helper: enter placing mode (or switch the current selection) for
-/// `item`. Called from inventory / hotbar slot clicks.
-pub fn enter_placing_with(
-    commands: &mut Commands,
-    build_mode: Option<&mut BuildMode>,
-    placeables: &PlaceableItems,
-    registry: &ItemRegistry,
-    asset_server: &AssetServer,
-    meshes: &mut ResMut<Assets<Mesh>>,
-    materials: &mut ResMut<Assets<StandardMaterial>>,
-    item: ItemId,
-) {
-    let Some(idx) = placeables.0.iter().position(|i| *i == item) else { return };
-    if let Some(mode) = build_mode {
-        if mode.selected != idx {
-            mode.selected = idx;
-            refresh_build_preview(commands, mode, item, registry, asset_server, meshes, materials);
-        }
-    } else {
-        let mut mode = BuildMode {
-            tool: BuildTool::Place,
-            selected: idx,
-            rotation: 0.0,
-            preview_entity: None,
-            line_anchor: None,
-            line_ghosts: Vec::new(),
-            remove_highlight: None,
-        };
-        refresh_build_preview(commands, &mut mode, item, registry, asset_server, meshes, materials);
-        commands.insert_resource(mode);
-    }
-}
-
 /// Spawn a placed building from a known transform. Used by `place_building`,
 /// the undo/redo restore path, and save/load. Returns the spawned entity
 /// so callers can record it in the build history; returns `None` if the
@@ -1249,12 +1389,37 @@ pub fn spawn_placed_building(
     asset_server: &AssetServer,
     meshes: &mut ResMut<Assets<Mesh>>,
     materials: &mut ResMut<Assets<StandardMaterial>>,
+    catalog: &crate::items::InteriorCatalog,
     item: ItemId,
     transform: Transform,
 ) -> Option<Entity> {
     let def = registry.get(item)?;
     let scale = def.form.placement_scale();
     let scaled = transform.with_scale(transform.scale * Vec3::splat(scale));
+
+    // Interior items resolve via the catalog. The mesh+material attach
+    // asynchronously through `resolve_interior_spawns` once the parent
+    // GLB finishes loading; the entity is spawned now with an
+    // `InteriorSpawnRequest` placeholder so undo/redo and save/load see
+    // the entity immediately.
+    if let Some(name) = &def.interior_name {
+        let item_idx = catalog.by_name.get(name).copied()?;
+        let interior = &catalog.items[item_idx];
+        let gltf = catalog.gltf_handle(interior.source).clone();
+        let mut e = commands.spawn((
+            PlacedBuilding { item },
+            scaled,
+            // Visibility and Transform are inherited; the children spawned
+            // by resolve will inherit position from this parent entity.
+            Visibility::Inherited,
+            InteriorSpawnRequest {
+                gltf,
+                node_name: name.clone(),
+            },
+        ));
+        collision::attach_for_form(&mut e, def.form, &transform);
+        return Some(e.id());
+    }
 
     if let Some(path) = def.form.scene_path() {
         let mut e = commands.spawn((
@@ -1303,4 +1468,58 @@ pub fn spawn_placed_building(
     }
     collision::attach_for_form(&mut e, def.form, &transform);
     Some(e.id())
+}
+
+/// Async resolver for `InteriorSpawnRequest` — once the parent GLB is
+/// loaded and the named node's mesh asset is ready, spawn one
+/// Mesh3d+MeshMaterial3d child per primitive on the placed entity, then
+/// remove the request component. The node's local transform is ignored;
+/// the placed entity already carries the world transform from placement.
+fn resolve_interior_spawns(
+    mut commands: Commands,
+    requests: Query<(Entity, &InteriorSpawnRequest)>,
+    gltfs: Res<Assets<Gltf>>,
+    gltf_nodes: Res<Assets<GltfNode>>,
+    gltf_meshes: Res<Assets<GltfMesh>>,
+) {
+    for (entity, req) in &requests {
+        let Some(gltf) = gltfs.get(&req.gltf) else { continue };
+        let Some(node_handle) = gltf.named_nodes.get(req.node_name.as_str()) else {
+            warn!("[interior] node '{}' not in parent GLB", req.node_name);
+            commands.entity(entity).remove::<InteriorSpawnRequest>();
+            continue;
+        };
+        let Some(node) = gltf_nodes.get(node_handle) else { continue };
+        let Some(mesh_handle) = node.mesh.as_ref() else {
+            // Some nodes are bare transforms with no mesh — nothing to render.
+            commands.entity(entity).remove::<InteriorSpawnRequest>();
+            continue;
+        };
+        let Some(gltf_mesh) = gltf_meshes.get(mesh_handle) else { continue };
+
+        // Preserve the node's rotation + scale so per-item authoring
+        // intent (e.g. plant.008 has scale 0.108) carries through.
+        // Translation comes from the source scene's grid layout — we
+        // explicitly drop it so the item lands at our placement instead
+        // of its grid-cell coords in the original GLB.
+        let local_tf = Transform {
+            translation: Vec3::ZERO,
+            rotation: node.transform.rotation,
+            scale: node.transform.scale,
+        };
+        commands.entity(entity).with_children(|parent| {
+            for prim in &gltf_mesh.primitives {
+                let mat = prim
+                    .material
+                    .clone()
+                    .unwrap_or_default();
+                parent.spawn((
+                    Mesh3d(prim.mesh.clone()),
+                    MeshMaterial3d(mat),
+                    local_tf,
+                ));
+            }
+        });
+        commands.entity(entity).remove::<InteriorSpawnRequest>();
+    }
 }

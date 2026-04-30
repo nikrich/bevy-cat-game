@@ -17,6 +17,16 @@ pub struct ItemDef {
     pub tags: ItemTags,
     pub display_name: String,
     pub save_key: String,
+    /// Set on `Form::Interior` items. Resolves at spawn time to a node in
+    /// one of the interior GLBs via `InteriorCatalog`. `None` for everything
+    /// else.
+    #[serde(default)]
+    pub interior_name: Option<String>,
+    /// Coarse category derived from the node name (e.g. `"armchair.008"`
+    /// → `"armchair"`). Drives the catalog UI's grouping. `None` for
+    /// non-interior items.
+    #[serde(default)]
+    pub interior_category: Option<String>,
 }
 
 #[derive(Resource, Default)]
@@ -53,9 +63,42 @@ impl ItemRegistry {
             tags,
             display_name,
             save_key: save_key.clone(),
+            interior_name: None,
+            interior_category: None,
         };
 
         self.by_pair.insert((form, material), id);
+        self.by_save_key.insert(save_key, id);
+        self.defs.push(def);
+        id
+    }
+
+    /// Register an item resolved at runtime via the interior catalog
+    /// (`Form::Interior`). The save_key is `"interior.{name}"` so save
+    /// files survive registry reordering, and the display name humanises
+    /// the node name (e.g. `"armchair.008"` → `"Armchair 008"`).
+    pub fn register_interior(
+        &mut self,
+        name: String,
+        category: String,
+        tags: ItemTags,
+    ) -> ItemId {
+        let save_key = format!("interior.{}", name);
+        if let Some(id) = self.by_save_key.get(&save_key) {
+            return *id;
+        }
+        let id = ItemId(self.defs.len() as u32);
+        let display_name = humanise_interior_name(&name);
+        let def = ItemDef {
+            id,
+            form: Form::Interior,
+            material: Material::None,
+            tags,
+            display_name,
+            save_key: save_key.clone(),
+            interior_name: Some(name),
+            interior_category: Some(category),
+        };
         self.by_save_key.insert(save_key, id);
         self.defs.push(def);
         id
@@ -80,6 +123,25 @@ impl ItemRegistry {
     pub fn iter_with_tag(&self, tag: ItemTags) -> impl Iterator<Item = &ItemDef> {
         self.defs.iter().filter(move |d| d.tags.contains(tag))
     }
+}
+
+/// "armchair.008" -> "Armchair 008". Underscore -> space too.
+/// The trailing index keeps individual variants distinguishable in the UI.
+fn humanise_interior_name(raw: &str) -> String {
+    raw.replace(['_', '.'], " ")
+        .split_whitespace()
+        .map(|word| {
+            let mut chars = word.chars();
+            match chars.next() {
+                None => String::new(),
+                Some(first) => first
+                    .to_uppercase()
+                    .chain(chars.flat_map(char::to_lowercase))
+                    .collect(),
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 /// Populate the registry with the starter catalog.

@@ -24,6 +24,7 @@ use bevy_tnua_rapier3d::prelude::TnuaRapier3dSensorShape;
 use leafwing_input_manager::prelude::ActionState;
 
 use crate::crafting::CraftingState;
+use crate::camera::CameraOrbit;
 use crate::input::{iso_movement, Action, CursorState};
 use crate::memory::verbs::CatVerbState;
 use crate::save::LoadedPlayerPos;
@@ -150,6 +151,7 @@ fn drive_player(
     action_state: Res<ActionState<Action>>,
     cursor: Res<CursorState>,
     crafting: Res<CraftingState>,
+    orbit: Res<CameraOrbit>,
     build_mode: Option<Res<crate::building::BuildMode>>,
     mut query: Query<(&Transform, &mut TnuaController<ControlScheme>), With<Player>>,
 ) -> Result {
@@ -159,7 +161,7 @@ fn drive_player(
     let dir2 = if crafting.open {
         Vec2::ZERO
     } else {
-        iso_movement(&action_state)
+        iso_movement(&action_state, &orbit)
     };
     // `desired_motion` is direction-times-factor in [0, 1]; the basis config
     // already owns the m/s cap via `speed`. Stalking just shrinks the factor

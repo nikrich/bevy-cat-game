@@ -12,7 +12,7 @@ use bevy::prelude::*;
 
 use super::{spawn_placed_building, BuildMode, PlacedBuilding};
 use crate::inventory::{Inventory, InventoryChanged};
-use crate::items::{ItemId, ItemRegistry};
+use crate::items::{InteriorCatalog, ItemId, ItemRegistry};
 
 /// Cap on undo/redo stack depth. Each entry holds a single op (a single
 /// click), so 50 covers a comfortable session of fine-grained edits.
@@ -72,6 +72,7 @@ pub struct PieceRef {
 
 /// Ctrl+Z = undo. Ctrl+Shift+Z (or Ctrl+Y) = redo. Only fires while build
 /// mode is active so the chord doesn't collide with non-build undoables.
+#[allow(clippy::too_many_arguments)]
 fn undo_redo_hotkeys(
     keyboard: Res<ButtonInput<KeyCode>>,
     build_mode: Option<Res<BuildMode>>,
@@ -84,6 +85,7 @@ fn undo_redo_hotkeys(
     mut inventory: ResMut<Inventory>,
     mut inv_events: MessageWriter<InventoryChanged>,
     placed_q: Query<(Entity, &Transform, &PlacedBuilding)>,
+    catalog: Res<InteriorCatalog>,
 ) {
     if build_mode.is_none() {
         return;
@@ -109,6 +111,7 @@ fn undo_redo_hotkeys(
                 &mut inventory,
                 &mut inv_events,
                 &placed_q,
+                &catalog,
             );
         } else {
             apply_undo(
@@ -120,6 +123,7 @@ fn undo_redo_hotkeys(
                 &mut materials,
                 &mut inventory,
                 &mut inv_events,
+                &catalog,
             );
         }
     }
@@ -135,6 +139,7 @@ fn undo_redo_hotkeys(
             &mut inventory,
             &mut inv_events,
             &placed_q,
+            &catalog,
         );
     }
 }
@@ -150,6 +155,7 @@ pub fn apply_undo(
     materials: &mut ResMut<Assets<StandardMaterial>>,
     inventory: &mut Inventory,
     inv_events: &mut MessageWriter<InventoryChanged>,
+    catalog: &InteriorCatalog,
 ) {
     let Some(op) = history.undo.pop() else { return };
     let inverse = match op {
@@ -182,6 +188,7 @@ pub fn apply_undo(
                         asset_server,
                         meshes,
                         materials,
+                        catalog,
                         p.item,
                         p.transform,
                     );
@@ -216,6 +223,7 @@ pub fn apply_redo(
     inventory: &mut Inventory,
     inv_events: &mut MessageWriter<InventoryChanged>,
     placed_q: &Query<(Entity, &Transform, &PlacedBuilding)>,
+    catalog: &InteriorCatalog,
 ) {
     let Some(op) = history.redo.pop() else { return };
     let forward = match op {
@@ -230,6 +238,7 @@ pub fn apply_redo(
                         asset_server,
                         meshes,
                         materials,
+                        catalog,
                         p.item,
                         p.transform,
                     );

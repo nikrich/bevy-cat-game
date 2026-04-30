@@ -10,7 +10,7 @@ use crate::building::PlacedBuilding;
 use leafwing_input_manager::prelude::ActionState;
 
 use crate::crafting::CraftingState;
-use crate::input::{iso_movement, Action};
+use crate::input::{movement_magnitude_squared, Action};
 use crate::items::ItemRegistry;
 use crate::player::Player;
 use crate::world::biome::{Biome, WorldNoise};
@@ -64,7 +64,7 @@ fn nap_system(
 ) {
     let Ok(tf) = player_q.single() else { return };
     let cell = world_to_cell(tf.translation);
-    let moving = iso_movement(&action_state).length_squared() > MOVING_THRESHOLD_SQ;
+    let moving = movement_magnitude_squared(&action_state) > MOVING_THRESHOLD_SQ;
 
     let cancel = verbs_blocked(&crafting)
         || !action_state.pressed(&Action::Nap)
@@ -196,7 +196,7 @@ fn mark_system(
 ) {
     let Ok(tf) = player_q.single() else { return };
     let cell = world_to_cell(tf.translation);
-    let moving = iso_movement(&action_state).length_squared() > MOVING_THRESHOLD_SQ;
+    let moving = movement_magnitude_squared(&action_state) > MOVING_THRESHOLD_SQ;
 
     let cancel = verbs_blocked(&crafting)
         || !action_state.pressed(&Action::Mark)

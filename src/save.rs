@@ -21,7 +21,13 @@ impl Plugin for SavePlugin {
         app.init_resource::<SaveTimer>()
             .add_systems(
                 Startup,
-                load_game.after(crate::items::registry::seed_default_items),
+                load_game
+                    .after(crate::items::registry::seed_default_items)
+                    // Interior items aren't in the registry until
+                    // `register_interior_items` runs; without this ordering,
+                    // any saved `interior.*` building gets dropped on load
+                    // with a "Building key not in registry" warning.
+                    .after(crate::items::interior::register_interior_items),
             )
             .add_systems(Update, auto_save);
     }
@@ -288,6 +294,7 @@ fn load_game(
     mut inv_events: MessageWriter<InventoryChanged>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
+    catalog: Res<crate::items::InteriorCatalog>,
 ) {
     let path = save_path();
     let Ok(data) = fs::read_to_string(&path) else {
@@ -367,6 +374,7 @@ fn load_game(
             &asset_server,
             &mut meshes,
             &mut materials,
+            &catalog,
             id,
             Transform::from_xyz(b.x, b.y, b.z).with_rotation(Quat::from_rotation_y(b.rot)),
         );

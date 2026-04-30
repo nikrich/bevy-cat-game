@@ -79,6 +79,10 @@ pub enum Action {
     HotbarPrev,
     ZoomIn,
     ZoomOut,
+    /// Snap-rotate the camera 90° counter-clockwise (around +Y).
+    RotateCameraLeft,
+    /// Snap-rotate the camera 90° clockwise (around +Y).
+    RotateCameraRight,
 }
 
 impl Action {
@@ -164,10 +168,8 @@ impl Action {
         }
         map.insert(Self::HotbarNext, GamepadButton::RightTrigger);
         map.insert(Self::HotbarPrev, GamepadButton::LeftTrigger);
-        // Keyboard cycle so the player can reach placeables past slot 9
-        // (Wall variants live at slots 12-15) without using the inventory UI.
-        map.insert(Self::HotbarNext, KeyCode::KeyE);
-        map.insert(Self::HotbarPrev, KeyCode::KeyQ);
+        // Keyboard cycle: brackets in build mode (cycle_build_item) and
+        // mouse scroll wheel anywhere. Q/E are reserved for camera rotation.
         map.insert(Self::HotbarNext, MouseScrollDirection::DOWN);
         map.insert(Self::HotbarPrev, MouseScrollDirection::UP);
 
@@ -175,6 +177,16 @@ impl Action {
         // when the camera grows zoom controls.
         map.insert(Self::ZoomIn, KeyCode::Equal);
         map.insert(Self::ZoomOut, KeyCode::Minus);
+
+        // Camera snap-rotation. Q/E for keyboard, D-pad left/right on pad.
+        // Comma/period kept as alt bindings since they're the iso-game
+        // convention (WoW / ARPGs) and cost nothing to leave in.
+        map.insert(Self::RotateCameraLeft, KeyCode::KeyQ);
+        map.insert(Self::RotateCameraLeft, KeyCode::Comma);
+        map.insert(Self::RotateCameraLeft, GamepadButton::DPadLeft);
+        map.insert(Self::RotateCameraRight, KeyCode::KeyE);
+        map.insert(Self::RotateCameraRight, KeyCode::Period);
+        map.insert(Self::RotateCameraRight, GamepadButton::DPadRight);
 
         map
     }
@@ -216,14 +228,19 @@ pub struct CursorHit {
 }
 
 /// Iso-rotated movement vector. Convert leafwing's raw `Move` axis pair into
-/// the vector all the world-space gameplay systems were tuned for.
-pub fn iso_movement(action_state: &ActionState<Action>) -> Vec2 {
+/// the vector all the world-space gameplay systems were tuned for. The
+/// camera orbit's yaw is folded in so WASD always means "up = away from
+/// camera", regardless of the active 90° snap rotation.
+pub fn iso_movement(
+    action_state: &ActionState<Action>,
+    orbit: &crate::camera::CameraOrbit,
+) -> Vec2 {
     let raw = action_state.clamped_axis_pair(&Action::Move);
     if raw.length_squared() < 0.0001 {
         return Vec2::ZERO;
     }
     let dir = raw.normalize();
-    let angle = std::f32::consts::FRAC_PI_4;
+    let angle = std::f32::consts::FRAC_PI_4 + orbit.yaw();
     Vec2::new(
         dir.x * angle.cos() - dir.y * angle.sin(),
         dir.x * angle.sin() + dir.y * angle.cos(),
@@ -238,6 +255,13 @@ pub fn raw_movement(action_state: &ActionState<Action>) -> Vec2 {
     } else {
         raw.normalize()
     }
+}
+
+/// Squared length of the raw movement axis. Rotation-invariant, so callers
+/// that only care about "is the player trying to move?" can skip threading
+/// the camera orbit through their system params.
+pub fn movement_magnitude_squared(action_state: &ActionState<Action>) -> f32 {
+    action_state.clamped_axis_pair(&Action::Move).length_squared()
 }
 
 fn compute_cursor_world(
@@ -284,10 +308,23 @@ fn update_cursor_state(
     mouse: Res<ButtonInput<MouseButton>>,
     gamepads: Query<&Gamepad>,
     mut cursor: ResMut<CursorState>,
+    mut egui_contexts: bevy_egui::EguiContexts,
 ) {
-    cursor.pointer_over_ui = interactions
+    let bevy_ui_hit = interactions
         .iter()
         .any(|i| !matches!(i, Interaction::None));
+
+    // egui has its own UI tree (build tool palette, decoration catalog,
+    // brush hotbar, crafting menu). `wants_pointer_input` is true when the
+    // cursor is over an egui widget OR egui is dragging something — that's
+    // the right gate for "should world clicks be suppressed?".
+    let egui_hit = egui_contexts
+        .ctx_mut()
+        .ok()
+        .map(|ctx| ctx.wants_pointer_input() || ctx.is_pointer_over_area())
+        .unwrap_or(false);
+
+    cursor.pointer_over_ui = bevy_ui_hit || egui_hit;
 
     // Mouse-left isn't bound to a leafwing action; we read it raw here so
     // the UI focus pass can gate world clicks against UI/crafting state in

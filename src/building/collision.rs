@@ -59,6 +59,12 @@ pub fn attach_for_form(entity: &mut EntityCommands, form: Form, transform: &Tran
             // 0.9 × 0.8 × 0.12 — same Stage 2 caveat as Door.
             entity.insert((Collider::cuboid(0.45, 0.4, 0.06), RigidBody::Fixed));
         }
+        Form::Interior => {
+            // Default 1m cube collider for runtime-loaded interior items.
+            // Per-item AABB-derived colliders would be tighter; tune in a
+            // polish pass once we sample the loaded mesh bounds.
+            entity.insert((Collider::cuboid(0.5, 0.5, 0.5), RigidBody::Fixed));
+        }
         _ => {}
     }
 }

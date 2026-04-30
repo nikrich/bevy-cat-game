@@ -28,6 +28,11 @@ pub enum PlacementStyle {
     /// advance the anchor to the last placed cube. Used by `Form::Wall`
     /// today; future fences / floor-tile chains slot in here.
     Line,
+    /// Click-and-hold paint. Each frame the mouse is held, a piece is
+    /// stamped at the cursor cell (skipping cells that already have a
+    /// piece). The whole drag becomes one undo entry. Used by `Form::Floor`
+    /// so paving a room feels like painting tiles instead of clicking each.
+    Paint,
 }
 
 /// Visual / behavioural archetype. Pairs with a `Material` to form an item.
@@ -70,6 +75,13 @@ pub enum Form {
 
     // Consumables
     Stew,
+
+    /// Marker variant for items resolved through `InteriorCatalog`. The
+    /// actual mesh + material come from a runtime-loaded GLB node lookup
+    /// keyed off `ItemDef::interior_name` — this variant carries no payload
+    /// itself so `Form` stays `Copy`. Used for the LowPoly Interior pack
+    /// (~1000 nodes) without authoring 1000 enum variants.
+    Interior,
 }
 
 impl Form {
@@ -102,6 +114,7 @@ impl Form {
             Form::Window => "Window",
             Form::Roof => "Roof",
             Form::Stew => "Stew",
+            Form::Interior => "Decoration",
         }
     }
 
@@ -134,6 +147,7 @@ impl Form {
             Form::Window => "window",
             Form::Roof => "roof",
             Form::Stew => "stew",
+            Form::Interior => "interior",
         }
     }
 
@@ -209,11 +223,15 @@ impl Form {
         }
     }
 
-    /// SceneRoot scale applied at placement. All placeables are procedural
-    /// primitives sized in `make_mesh()` for now -- proper 3D building
-    /// assets will replace them later.
+    /// SceneRoot scale applied at placement. Interior GLB items ship at
+    /// roughly half the visual scale of our 1m cube grid — bumping them
+    /// to 2x makes a chair / bed feel like furniture instead of dollhouse
+    /// pieces. Everything else is already authored at world scale.
     pub fn placement_scale(self) -> f32 {
-        1.0
+        match self {
+            Form::Interior => 2.0,
+            _ => 1.0,
+        }
     }
 
     /// How the build preview snaps to the world grid. Floors and roofs sit at
@@ -252,6 +270,10 @@ impl Form {
             Form::Barrel => 0.50,
             Form::Bucket => 0.20,
             Form::Stew => 0.22,
+            // Interior items: per-item AABB-derived lift would be ideal,
+            // but lacking that, 0.5 keeps medium furniture roughly on the
+            // ground. Some items will float or sink — tune in a polish pass.
+            Form::Interior => 0.5,
             _ => 0.05,
         }
     }
@@ -278,6 +300,7 @@ impl Form {
             Form::Barrel => 1.00,
             Form::Bucket => 0.40,
             Form::Stew => 0.44,
+            Form::Interior => 1.0,
             _ => 0.30,
         }
     }
@@ -287,6 +310,7 @@ impl Form {
     pub fn placement_style(self) -> PlacementStyle {
         match self {
             Form::Wall => PlacementStyle::Line,
+            Form::Floor => PlacementStyle::Paint,
             _ => PlacementStyle::Single,
         }
     }
@@ -325,6 +349,10 @@ impl Form {
             Form::Barrel => Mesh::from(Cylinder::new(0.3, 1.0)),
             Form::Bucket => Mesh::from(Cylinder::new(0.2, 0.4)),
             Form::Stew => Mesh::from(Sphere::new(0.22)),
+            // Interior items resolve their mesh asynchronously via the
+            // catalog; this fallback shows up only if the parent GLB
+            // failed to load.
+            Form::Interior => Mesh::from(Cuboid::new(0.6, 0.6, 0.6)),
         }
     }
 }

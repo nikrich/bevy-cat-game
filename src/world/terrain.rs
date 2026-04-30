@@ -708,12 +708,20 @@ pub fn build_chunk_mesh(geom: &ChunkGeometry) -> Mesh {
 
 /// Build the rapier trimesh collider from the same geometry buffers, so
 /// physics matches the visual exactly — the cat's capsule clips the same
-/// risers it can see. No `TriMeshFlags` preprocessing: pseudo-normals,
-/// duplicate-vertex merging, topology graph, and degenerate-triangle
-/// filtering are all redundant for our hand-built meshes and add real
-/// cost on every brush regen (~10–100 ms per chunk in debug, enough to
-/// freeze the schedule when several chunks regen on the same frame).
+/// risers it can see.
+///
+/// `FIX_INTERNAL_EDGES` is required: without it, parry's EPA can fail to
+/// converge when Tnua's downward capsule cast lands on a shared edge
+/// between two triangles with conflicting normals (e.g. the inner corner
+/// of a cliff riser). The pseudo-normals computed by this flag let EPA
+/// pick a single contact normal per edge and terminate. The flag implies
+/// `MERGE_DUPLICATE_VERTICES`, which we want anyway since our chunk
+/// geometry duplicates verts at every face. Pre-processing cost is the
+/// trade-off — measured at single-digit ms per chunk in debug, well
+/// within the regen budget.
 pub fn build_chunk_collider(geom: &ChunkGeometry) -> Option<Collider> {
+    use bevy_rapier3d::prelude::TriMeshFlags;
+
     let verts: Vec<Vec3> = geom
         .positions
         .iter()
@@ -724,7 +732,7 @@ pub fn build_chunk_collider(geom: &ChunkGeometry) -> Option<Collider> {
         .chunks_exact(3)
         .map(|c| [c[0], c[1], c[2]])
         .collect();
-    Collider::trimesh(verts, tris).ok()
+    Collider::trimesh_with_flags(verts, tris, TriMeshFlags::FIX_INTERNAL_EDGES).ok()
 }
 
 // ---------- Regen system ----------
