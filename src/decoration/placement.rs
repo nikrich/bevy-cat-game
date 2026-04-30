@@ -278,32 +278,71 @@ pub fn update_preview(
     };
 
     if needs_respawn {
-        let mesh = if matches!(def.form, Form::Interior) {
-            let aabb_dims = def
-                .interior_name
+        // Determine the ghost cuboid dimensions. For Form::Interior we
+        // size from the AABB so the ghost matches the asset footprint;
+        // for other forms the make_mesh() primitive is the right size
+        // already, but we still need explicit dimensions to position the
+        // forward arrow on top.
+        let dims = if matches!(def.form, Form::Interior) {
+            def.interior_name
                 .as_deref()
                 .and_then(|name| catalog.aabb_for(name))
                 .map(|aabb| {
                     let scale = def.form.placement_scale();
                     aabb.size() * scale
                 })
-                .unwrap_or(Vec3::splat(0.6));
-            meshes.add(Mesh::from(Cuboid::new(aabb_dims.x, aabb_dims.y, aabb_dims.z)))
+                .unwrap_or(Vec3::splat(0.6))
+        } else {
+            // Approximate the form's bounding box. For most cuboid-shaped
+            // forms (Bed, Chair, Table, etc.) this is a reasonable proxy;
+            // arrow sizing only needs to be in the right ballpark.
+            Vec3::new(1.0, 0.8, 1.0)
+        };
+
+        let body_mesh = if matches!(def.form, Form::Interior) {
+            meshes.add(Mesh::from(Cuboid::new(dims.x, dims.y, dims.z)))
         } else {
             meshes.add(def.form.make_mesh())
         };
-        let mat = materials.add(StandardMaterial {
+        let body_mat = materials.add(StandardMaterial {
             base_color: Color::srgba(0.4, 0.9, 0.6, 0.4),
             alpha_mode: AlphaMode::Blend,
             ..default()
         });
-        commands.spawn((
-            DecorationPreview { item: item_id },
-            Mesh3d(mesh),
-            MeshMaterial3d(mat),
-            Transform::from_translation(pos)
-                .with_rotation(Quat::from_rotation_y(mode.rotation_radians)),
-        ));
+
+        // Forward indicator: a small cone sitting on top of the ghost,
+        // tip pointing in +Z (the piece's local forward). Cone defaults
+        // to apex pointing +Y, so rotate -90 degrees around X to lay it
+        // forward. Bright orange so it reads against the green ghost.
+        let arrow_mesh = meshes.add(Mesh::from(Cone {
+            radius: 0.10,
+            height: 0.30,
+        }));
+        let arrow_mat = materials.add(StandardMaterial {
+            base_color: Color::srgb(1.0, 0.55, 0.15),
+            emissive: LinearRgba::from(Color::srgb(0.6, 0.25, 0.05)),
+            unlit: true,
+            ..default()
+        });
+        let arrow_y = dims.y * 0.5 + 0.05;
+        let arrow_tf = Transform::from_translation(Vec3::new(0.0, arrow_y, 0.0))
+            .with_rotation(Quat::from_rotation_x(-std::f32::consts::FRAC_PI_2));
+
+        commands
+            .spawn((
+                DecorationPreview { item: item_id },
+                Mesh3d(body_mesh),
+                MeshMaterial3d(body_mat),
+                Transform::from_translation(pos)
+                    .with_rotation(Quat::from_rotation_y(mode.rotation_radians)),
+            ))
+            .with_children(|parent| {
+                parent.spawn((
+                    Mesh3d(arrow_mesh),
+                    MeshMaterial3d(arrow_mat),
+                    arrow_tf,
+                ));
+            });
     }
 }
 
