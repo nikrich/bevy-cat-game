@@ -310,23 +310,25 @@ pub fn update_preview(
             ..default()
         });
 
-        // Forward indicator: a small cone sitting on top of the ghost,
-        // tip pointing in +Z (the piece's local forward). Cone defaults
-        // to apex pointing +Y, so rotate -90 degrees around X to lay it
-        // forward. Bright orange so it reads against the green ghost.
-        let arrow_mesh = meshes.add(Mesh::from(Cone {
-            radius: 0.10,
-            height: 0.30,
-        }));
-        let arrow_mat = materials.add(StandardMaterial {
+        // Forward indicator: a bright slab pressed against the piece's
+        // +Z face (its local forward). Reads at a glance like a colored
+        // front door, so the player sees orientation from any camera
+        // angle without having to look down at an arrow on top. Slab is
+        // 95% of the face so a thin border of green ghost shows around
+        // it -- looks intentional rather than smushed.
+        let face_mesh = meshes.add(Mesh::from(Cuboid::new(
+            dims.x * 0.95,
+            dims.y * 0.95,
+            0.02,
+        )));
+        let face_mat = materials.add(StandardMaterial {
             base_color: Color::srgb(1.0, 0.55, 0.15),
-            emissive: LinearRgba::from(Color::srgb(0.6, 0.25, 0.05)),
+            emissive: LinearRgba::from(Color::srgb(1.4, 0.7, 0.2)),
             unlit: true,
             ..default()
         });
-        let arrow_y = dims.y * 0.5 + 0.05;
-        let arrow_tf = Transform::from_translation(Vec3::new(0.0, arrow_y, 0.0))
-            .with_rotation(Quat::from_rotation_x(-std::f32::consts::FRAC_PI_2));
+        let face_tf =
+            Transform::from_translation(Vec3::new(0.0, 0.0, dims.z * 0.5 + 0.01));
 
         commands
             .spawn((
@@ -338,9 +340,9 @@ pub fn update_preview(
             ))
             .with_children(|parent| {
                 parent.spawn((
-                    Mesh3d(arrow_mesh),
-                    MeshMaterial3d(arrow_mat),
-                    arrow_tf,
+                    Mesh3d(face_mesh),
+                    MeshMaterial3d(face_mat),
+                    face_tf,
                 ));
             });
     }
