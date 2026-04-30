@@ -3,8 +3,15 @@
 use bevy::prelude::*;
 
 /// Marker for the decoration ghost preview entity. One at a time.
+/// Carries the `ItemId` of the piece the ghost is currently representing
+/// so `update_preview` can detect a selection change and respawn with
+/// the right mesh -- without this the ghost gets stuck on the FIRST
+/// item ever selected even after the player clicks a different
+/// catalog thumbnail.
 #[derive(Component)]
-pub struct DecorationPreview;
+pub struct DecorationPreview {
+    pub item: crate::items::ItemId,
+}
 
 /// Granularity of v1 magnetic snap. 0.1m is fine enough that the grid
 /// is invisible at iso zoom but coarse enough that two pieces placed
@@ -220,19 +227,19 @@ pub fn update_preview(
     noise: Res<WorldNoise>,
     placeables: Res<crate::building::PlaceableItems>,
     catalog: Res<InteriorCatalog>,
-    mut preview_q: Query<(Entity, &mut Transform), With<DecorationPreview>>,
+    mut preview_q: Query<(Entity, &DecorationPreview, &mut Transform)>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
 ) {
     let Some(mode) = decoration_mode else {
         // Mode off -- despawn any lingering preview.
-        for (e, _) in &preview_q {
+        for (e, _, _) in &preview_q {
             commands.entity(e).despawn();
         }
         return;
     };
     if !matches!(mode.tool, DecorationTool::Place) {
-        for (e, _) in &preview_q {
+        for (e, _, _) in &preview_q {
             commands.entity(e).despawn();
         }
         return;
@@ -251,10 +258,26 @@ pub fn update_preview(
         &catalog,
     );
 
-    if let Ok((_, mut tf)) = preview_q.single_mut() {
-        tf.translation = pos;
-        tf.rotation = Quat::from_rotation_y(mode.rotation_radians);
-    } else {
+    // Reuse the existing ghost only when it represents the same item. If
+    // the player picked a different piece in the catalog (`item_id`
+    // changed), despawn so the spawn branch below rebuilds with the new
+    // mesh / size. Without this the ghost shape gets stuck on the first
+    // selection.
+    let needs_respawn = match preview_q.single_mut() {
+        Ok((entity, prev, mut tf)) => {
+            if prev.item != item_id {
+                commands.entity(entity).despawn();
+                true
+            } else {
+                tf.translation = pos;
+                tf.rotation = Quat::from_rotation_y(mode.rotation_radians);
+                false
+            }
+        }
+        Err(_) => true,
+    };
+
+    if needs_respawn {
         let mesh = if matches!(def.form, Form::Interior) {
             let aabb_dims = def
                 .interior_name
@@ -275,7 +298,7 @@ pub fn update_preview(
             ..default()
         });
         commands.spawn((
-            DecorationPreview,
+            DecorationPreview { item: item_id },
             Mesh3d(mesh),
             MeshMaterial3d(mat),
             Transform::from_translation(pos)
