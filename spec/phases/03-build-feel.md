@@ -1,163 +1,132 @@
-# Phase 2 — Build Feel: Modular Kit + Snap + BuildJob
+# Phase 2 -- Build Feel: Cube Placement + Decoration Split
 
-> Status: Planned
+> Status: Stage 1 (cube placement) closed; Stage 2 (procedural Replace + interior catalog) closed; Stage 3 (decoration mode split) in implementation
 > Depends on: Phase 1
-> Exit criteria: Player can place modular building pieces from a hotbar, snapping to neighbors. Pieces are constructed over time as `BuildJob` entities (player builds them in Phase 2; Builder cats consume queue in Phase 6). Walls, floors, roofs, stairs, doors, windows, and ~5 furniture/decoration pieces ship. Interior visibility (translucent walls, hidden roof) works. Cozy Score MVP visible as heart particles.
+> Exit criteria: Two mutually exclusive placement modes (`Build` and `Decoration`) with their own physics, verbs, and UI. Build mode places structural cubes; Decoration mode glides items along surfaces with magnetic snap. Single shared undo / redo. Players can construct a small house (build) and decorate it inside (decoration) without ever feeling like one mode is doing the other's job
 
 ## Goal
 
-Make building feel good. Snap-based, in-world, no mode-switch beyond a single toggle. Construction is *visible*: pieces don't pop in, they assemble. Editing existing pieces is one-touch. The cozier a room, the more it feels alive.
+Make building feel good. The original spec assumed a snap-point algorithm; that direction was scrapped (DEC-020) and replaced with cube placement, then split (DEC-021) into a structural mode and a decoration mode that uses entirely different placement physics. This phase ships both halves.
 
-This phase is the spec's #1 pillar. It is the longest phase and the one most worth slow-cooking until it feels right.
+This phase is the spec's #1 pillar. Build feel includes both *building* the structural skeleton and *decorating* the inside. They are the same pillar, but they want different tools.
 
-## Why now
+## Stage 1 -- Cube placement (CLOSED, DEC-020)
 
-Terrain is editable (Phase 1), and auto-flatten is wired. Without the building kit, all that infrastructure has no payoff. Build feel is also the foundation everything else (blueprints, NPCs, towns, festivals) hangs off.
+Shipped 2026-04-30. See `project_phase2_cube_pivot.md` memory entry and DEC-020 in `.claude/memory/decisions.md` for the full account. Summary:
 
-## Deliverables
+- Walls / floors / doors / windows are 1×1×1 cubes; rapier raycast + surface normal drive `compute_placement`
+- `Form::placement_style()` routes between `Single` / `Line` / `Paint` / `Replace`
+- Line tool (walls) with continuous-mode anchor advance
+- Paint tool (floors) with whole-drag-one-undo
+- Replace tool (doors / windows) with `BuildOp::Replaced` history variant for atomic undo
+- Camera Q/E snap-rotate folded into iso movement so WASD stays screen-relative
 
-- `BuildingPiece` entity model with snap points, materials, cozy_value
-- Snap algorithm with green/red ghost preview
-- Hotbar build menu (egui) with categories
-- `BuildJob` queue + construction-over-time system, animated
-- Mouth-slot inventory: cat carries the piece visually while constructing
-- Edit interactions: drag-reposition, R rotate, scroll material, delete refunds
-- Multi-select via shift-drag-box
-- Interior visibility (translucent occluding walls + hidden roof)
-- Cozy Score MVP: per-piece value aggregated per building, visible as heart particles
-- ~15 starter kit pieces authored, plus migration of existing buildables (fence, bench, lantern, flowerpot, wreath) into the kit catalogue
-- Construction animations: framing → walls rising → roof capping (per piece type)
+Original work items W2.1 (snap data) and W2.2 (compatibility table) are dead code. W2.3 (snap algorithm) and W2.4 (snap-validity tint) are superseded by `compute_placement` + green / red ghost wash.
 
-## Decisions to record
+## Stage 2 -- Procedural Replace + Interior catalog (CLOSED)
 
-- DEC-022 — Building piece data lives in `Form` registry (extending DEC-010 combinatorial system): Form holds mesh + snap points + cozy_value + category, Material remains a separate axis
-- DEC-023 — Snap radius: 2 m around cursor; piece-local snap point matching by type (wall-end-to-wall-end, etc.)
-- DEC-024 — Construction time per piece scales with category (decoration 2–5 s, furniture 5–10 s, wall 10–20 s, floor 5–10 s, roof 15–30 s)
-- DEC-025 — Existing fence/bench/lantern/flowerpot/wreath migrate to Decoration category; their meshes feed the new Form registry, no asset churn
+Shipped alongside Stage 1. Highlights:
 
-## Tech debt closed
+- Door / Window `Replace` placement style with composite spawn (header + jambs)
+- Interior asset placement for the LowPoly Interior pack (~1000 nodes)
+- Per-asset AABB pre-parsed at startup; `compute_interior_placement` snaps via footprint cells
+- `resolve_interior_spawns` recentres each asset by `-aabb.centre`
+- Door / window asset stretch (force x to 2m world width, force z to integer snap)
+- Carpet rule (`BlockingRule::WallsOnly`)
+- Pre-baked thumbnails (`bake_thumbnails` bin)
+- Decoration catalog UI (right-side panel, thumbnail grid, search, categories)
+- Indoor reveal (X-ray) with structural-only fade so furniture stays solid
+- X hotkey for X-ray reveal in build mode
+- `GatheredCells` persistence so reload doesn't regrow chopped trees
 
-- DEBT-005 — let-else patterns in player/camera (touch them when building system reads movement state)
+## Stage 3 -- Decoration mode split (IN IMPLEMENTATION, DEC-021)
 
-## Work breakdown
+The single `BuildMode` covering both structural and decoration is being split into two mutually exclusive modes. Design spec: `docs/superpowers/specs/2026-04-30-decoration-mode-split-design.md`. ADR: DEC-021.
 
-### W2.1 — `Form` registry extension for building pieces
+### Goals
 
-**What:** Extend `items::Form` (or a sibling enum) with building-piece variants. Each Form has: mesh handle, collider shape, list of `SnapPoint { local_pos, local_normal, kind }`, cozy_value, build_time_secs, category (Wall, Floor, Roof, Stairs, Foundation, Fixture, Furniture, Decoration, Outdoor).
-**Acceptance:** Forms registered at startup. Querying a Form's snap points returns world-space points after applying transform. Existing items in registry unaffected.
+- `BuildMode` (`B` key) keeps cube-grid placement for Wall, Floor, Door, Window, Roof, Fence. Tools: Place / Remove. UI: bottom hotbar with 6-swatch piece selector
+- `DecorationMode` (`N` key) places everything else (Bed, Chest, Lantern, Chair, Table, Bench, Campfire, Barrel, Bucket, FlowerPot, Wreath, all `Form::Interior` items). Tools: Place / Move / Remove. UI: bottom hotbar + right-side catalog
+- Magnetic-continuous placement on attach surfaces (terrain / floor top / wall face / furniture top)
+- 15-degree rotation steps (`R` / `Shift+R`); `Alt` for free continuous
+- Move tool picks up + carries + drops without inventory churn
+- Subtle highlights for hover and held pieces
+- Single shared undo / redo across both modes
 
-### W2.2 — Snap point kinds and compatibility table
+### Work breakdown
 
-**What:** Define `SnapKind`: `WallEnd`, `WallBottom`, `FloorEdge`, `FloorCorner`, `RoofRidge`, `RoofEave`, `StairTop`, `StairBottom`, `Surface`, `WallSurface`. Compatibility matrix declares which kinds can snap to which (e.g. `WallEnd ↔ WallEnd`, `WallBottom ↔ FloorEdge`, `Surface ↔ FloorCorner` for furniture on floors).
-**Acceptance:** Compatibility check is a single matrix lookup. New kinds added in one place propagate to all snap logic.
+#### W2.S3.1 -- Extract `src/edit/` shared infra
 
-### W2.3 — Snap algorithm
+Move `building/history.rs` -> `edit/history.rs`. Rename `BuildHistory` -> `EditHistory`. Rename `PlacedBuilding` -> `PlacedItem` and move to `edit/placed_item.rs`. Add new `edit/highlight.rs` with `HighlightPlugin` (hover + held tints, no logic yet, just the resource and component scaffolding). All `building` imports update; saves load unchanged because moonshine reflection keys on save key not component name.
 
-**What:** When a ghost piece is positioned, query all building pieces within 2 m of cursor via spatial index (rapier broadphase or a simple grid). For each candidate, find compatible snap point pairs. Snap to the nearest valid pair. Default to grid (0.5 m primary, 0.25 m with Shift) if no neighbor.
-**Acceptance:** Walls snap end-to-end perfectly. Floors snap edge-to-edge. Furniture snaps to floor surfaces. Snap responsiveness < 16 ms.
+**Acceptance:** Compile clean. Save / load existing world. All existing build hotkeys still work. No behavioural change.
 
-### W2.4 — Ghost piece preview with green/red validity
+#### W2.S3.2 -- Slim `src/building/`
 
-**What:** While in `BuildState::Building` with a piece selected, spawn a ghost entity that follows the cursor. Ghost uses a translucent shader. Tint green if placement is valid, red if invalid (overlap, no snap target where required, insufficient space). Snap point markers on neighbors highlight when ghost is in their range.
-**Acceptance:** Ghost is always visible and never blocks gameplay. Valid/invalid state changes as cursor moves over different positions. Snap markers feel like a tactile guide.
+Move `compute_interior_placement`, `resolve_interior_spawns`, `footprint_clear`, `BlockingRule`, the interior-asset spawn helpers out of `building/mod.rs` -- staged in a temporary `building/interior.rs` for now. Move `draw_decoration_catalog` out of `building/ui.rs` -- staged in a temporary `building/catalog.rs`. Building still owns these temporarily; the `decoration/` plugin will adopt them next.
 
-### W2.5 — `BuildJob` queue
+**Acceptance:** `building/mod.rs` is back under ~1200 lines. No behavioural change.
 
-**What:** `Resource BuildJobs(VecDeque<Entity>)` plus per-job entity carrying `BuildJob { form, material, transform, progress: 0.0..1.0, assignee: Option<Entity>, materials_reserved: bool }`. Click-to-place enqueues a job at cursor position with current selected piece.
-**Acceptance:** Click 10 times along a path → 10 jobs queued, all visible as "scaffolding" ghosts at their target positions.
+#### W2.S3.3 -- New `src/decoration/` plugin scaffold
 
-### W2.6 — Construction system: tick + animate
+Create `decoration/mod.rs` with `DecorationPlugin`, `DecorationMode` resource, `DecorationTool` enum (`Place`, `Move`, `Remove`), `N` key toggle (mutually exclusive with `BuildMode` -- pressing `N` in build mode swaps). Empty `placement.rs`, `interior.rs`, `move_tool.rs`, `catalog_ui.rs`, `hotbar_ui.rs` modules. Move the staged interior + catalog files from `building/` into `decoration/` and rewire imports.
 
-**What:** System advances `progress` for jobs whose `assignee` is currently the player (Phase 2) or a Builder cat (Phase 6 hook). Visual representation: scaffolding mesh swap as progress crosses thresholds (0–25 % framing, 25–75 % piece building, 75–100 % details). At 1.0, despawn job, spawn the final `BuildingPiece` entity with collider, snap points, and material.
-**Acceptance:** Placed wall takes its declared time to construct. Visual feedback at quartile thresholds is clear. Final piece behaves as a permanent building piece (collisions, snap target).
+**Acceptance:** `N` toggles a no-op decoration mode (no piece selected, no UI yet). `B` still works. Catalog UI now shows in decoration mode instead of build mode.
 
-### W2.7 — Player as builder in Phase 2
+#### W2.S3.4 -- Magnetic-continuous v1 (fine 0.1m grid)
 
-**What:** Player walks to the next queued job in range, plays a build animation (or capsule placeholder gesture), drives `progress`. Multiple nearby jobs queue in distance order.
-**Acceptance:** Click-to-place 3 walls in a row → player walks job to job, building each in turn. Walking away pauses progress; returning resumes. No double-claim of a single job.
+Implement `decoration::placement::compute_decoration_placement`. Use the existing rapier raycast hit + normal to pick the attach surface (terrain / floor / wall / furniture). Snap surface XZ to 0.1m. Rotation: 15-degree steps (`R` / `Shift+R`); `Alt+R` for free continuous.
 
-### W2.8 — Mouth-slot inventory: visible carry
+**Acceptance:** Place a chair anywhere on a floor at 0.1m precision. Place a candle on a table top. Place a wall lamp on a wall face. Two lamps placed near each other line up at the 0.1m grid.
 
-**What:** New component `MouthSlot(Option<Entity>)` on player. When carrying, the piece's mesh attaches at the cat's head bone (or an offset above the capsule placeholder). Carrying disables grooming, meowing (no-op stubs reserved for later). Drop on the same input that picked up.
-**Acceptance:** Selecting a piece + walking shows the piece visibly attached. Switching pieces swaps the visible attachment. Dropping clears the slot and spawns the piece on the ground.
+#### W2.S3.5 -- Decoration UI
 
-### W2.9 — Edit interactions on placed pieces
+Bottom hotbar in decoration mode: `[Place] [Move] [Remove] | thumbnail + name | recent x8 | undo / redo | X-ray`. Right-side catalog stays as is. Recent-picks quickbar in-memory only; click any to re-select. `[` / `]` cycles within the currently filtered catalog list.
 
-**What:**
-- Hover a piece → outline it.
-- Click+drag → reposition (re-snap at destination, refund materials only on cancel via Esc).
-- R → rotate 90° (Shift+R = 15°).
-- Scroll while hovering → cycle material (live, no rebuild).
-- Delete key → remove, refund materials to town pool (Phase 4 hook).
-- Right-click → context menu (delete, duplicate, copy material).
+**Acceptance:** Decoration hotbar renders with all elements. Catalog selection updates the hotbar thumbnail. Recent quickbar populates as you place. `[` / `]` cycles inside the filtered list.
 
-**Acceptance:** All interactions feel snappy. Drag preview shows the piece moving with valid/invalid tint. Material cycle is instant (handle swap, no respawn).
+#### W2.S3.6 -- Move tool
 
-### W2.10 — Multi-select via shift-drag-box
+Pick up a placed decoration piece on click; ghost follows cursor with magnetic placement; click to drop. No inventory delta. Build-mode pieces (wall / floor / door / window / roof / fence) are not pickable. Held piece shows the gentle pulsing emissive highlight.
 
-**What:** Hold Shift, drag a screen-space box. All pieces whose center is inside the projected world box become selected (indicated by outline). Batch operations: delete-all, rotate-all, change-material-all.
-**Acceptance:** Box-selecting 10 walls and pressing Delete refunds all 10 and clears them in one frame. Batch material change is instant.
+**Acceptance:** Click a placed chair -> chair becomes the held ghost. Click a new spot -> chair lands there. Click a wall -> nothing happens (build piece, not pickable in decoration mode).
 
-### W2.11 — Interior visibility: translucent occluders + roof hide
+#### W2.S3.7 -- Hover / held highlights
 
-**What:** When camera is inside a `Building` AABB, all walls of that building between the camera and the cat fade to ~30 % alpha. Roof becomes invisible. Implementation: per-building shader uniform `interior_visible: bool`, plus a per-frame check that flips it based on camera transform.
-**Acceptance:** Walking the cat into a single-room cottage: roof disappears, the wall behind the camera fades, the cat is visible inside. Walking out reverses cleanly.
+Implement `HighlightPlugin`: hover (cyan for Move, red for Remove) on the piece under the cursor; held (gentle pulse) on the carried piece. Both clean up on tool / mode exit and entity despawn.
 
-### W2.12 — Cozy Score aggregator
+**Acceptance:** Move tool hovered over a chair -> chair tints cyan. Switch to Remove -> tint flips to red. Pick up the chair -> tint becomes a soft pulse.
 
-**What:** `Building` entity holds child `BuildingPiece` entities. System recomputes Cozy Score on `Changed<Children>` for the building or `Changed<Material>` on a piece: sum of `cozy_value` per piece, plus bonuses (lighting active at night, kitchen completeness, fireplace + rug + plant combo). Penalties for empty rooms (heuristic: large floor area with few non-floor pieces).
-**Acceptance:** Adding a chair to an empty room increases score. Adding a lamp at night adds more than during day. Score readout visible in build mode header.
+#### W2.S3.8 -- Build mode 6-swatch hotbar
 
-### W2.13 — Cozy heart particle effect
+Replace the current piece-name label in the build hotbar with six clickable swatches (Wall / Floor / Door / Window / Roof / Fence). `[` / `]` cycles them. Click a swatch to pick.
 
-**What:** Particle emitter attached to each Building entity. Emission rate scales with normalized cozy_score. Particles drift up and dissipate. Subtle, not overwhelming.
-**Acceptance:** Empty cottage: zero hearts. Furnished cottage: gentle stream of hearts visible from outside. Maxed-out cottage: dense column.
+**Acceptance:** Build hotbar shows six swatches. Click a swatch -> ghost updates. `[` / `]` cycles.
 
-### W2.14 — Hotbar build menu (egui)
+### Stage 3 deferrals
 
-**What:** Persistent hotbar with categories (Walls, Floors, Roofs, Doors/Windows, Stairs, Furniture, Decoration, Outdoor, Brushes). Number keys 1–9 select within current category. Tab cycles category. LT (gamepad) opens a radial menu mirroring categories.
-**Acceptance:** Every piece in the kit is reachable in ≤ 2 inputs. Radial menu works on gamepad with no KB+M dependency.
-
-### W2.15 — Authoring: 15 starter kit pieces
-
-**What:** Mesh authoring (Blender → glTF). Pieces:
-1. Wall (full, 4 m wide)
-2. Wall with window
-3. Wall with door
-4. Wall (half-height)
-5. Floor tile (2 m × 2 m)
-6. Foundation (stone)
-7. Ceiling (flat)
-8. Roof gable end
-9. Roof slope
-10. Roof ridge cap
-11. Stairs (straight)
-12. Door (placeable into wall-with-door slot)
-13. Window pane (placeable into wall-with-window slot)
-14. Bed (basic)
-15. Table (dining)
-
-Plus migration: existing fence, bench, lantern, flowerpot, wreath registered as Decoration.
-**Acceptance:** All 15 pieces selectable from hotbar, place via snap, render correctly with all current materials (wood/stone). Migrated pieces continue to work in saves from Phase 1.
-
-### W2.16 — Save migration: pieces and Cozy Score
-
-**What:** `BuildingPiece`, `Building`, `MouthSlot`, `BuildJobs` queue serialized via moonshine reflection.
-**Acceptance:** Place a small cottage, save, reload. Cottage and its cozy score and visible particles return identical.
+- Magnetic anchors (v2). Plan to land in a polish pass after v1 is in players' hands.
+- Quickbar persistence across save / load.
+- Wall-mounted item Z-fighting / shader fixes.
+- Multi-select / batch operations (was W2.10 in the original spec).
+- Cube-cell save format.
 
 ## Risks / open questions
 
-- **Snap correctness with rotated pieces.** Mathematical bug surface is high. Lock down with unit tests for snap point transforms early.
-- **Translucent wall shader for interior visibility.** Order-independent transparency is hard. Acceptable starting point: simple alpha blend with depth pre-pass; iterate if visual quality is poor.
-- **Construction-over-time on capsule player.** Without cat animations, construction "feels" thin. Mitigation: framing scaffolding visualization carries the feel of construction independent of player animation.
+- **Existing save compatibility through the rename.** `PlacedBuilding` -> `PlacedItem` should be transparent (moonshine reflection keys on save key). Verify with a saved world from before the rename.
+- **Surface priority order for the magnet.** Plan to lock terrain -> floor -> wall -> furniture (first hit wins). Polish pass tunes.
+- **`B` and `N` muscle memory clash.** `N` is currently unused; if a future system claims it (notebook?), revisit.
+- **Held-piece highlight on asset-backed entities.** Pulsing emissive on a `SceneRoot` child requires walking the children -- may need a different mechanism for those.
 
 ## Out of scope
 
+- AI / town crafting recipes for the interior pack (separate spec, future)
 - Floor plan tool (Phase 3)
 - Auto-roof tool (Phase 3)
 - Builder cat consuming jobs (Phase 6)
-- Town pool for material refund (Phase 4 — until then, refund into existing inventory)
+- Construction-over-time (`BuildJob`) -- the original W2.5-W2.7 cluster. Out of scope; the cube-pivot model places instantly and we are not bringing construction time back unless playtest demands it. If revived, treat as a Phase 6 deliverable when builder cats land
+- Cozy Score and heart particles -- the original W2.12-W2.13. Out of scope for Phase 2; lift into Phase 4 when town life makes scoring meaningful
 
 ## Estimated effort
 
-12–18 work-days. Snap correctness, construction visualization, and interior visibility are the long poles.
+3-5 work-days for Stage 3 (the decoration split). The rename pass + extraction is the longest pole; magnetic v1 and Move tool are mostly straightforward against the renamed types.

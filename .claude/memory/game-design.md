@@ -55,17 +55,28 @@ A peaceful, lifelong world-crafting game where you play as a bipedal cat explori
 - Mushroom x2 + Bush -> Stew
 - Flower x3 + Bush -> Wreath
 
-## Building (cube-placement model, DEC-020)
-- Minecraft-style 1×1×1 cube placement. Walls are full cubes; furniture/decorations keep their natural meshes inside cube cells
+## Build mode (cube-placement, DEC-020)
+- B key toggles. Owns Wall, Floor, Door, Window, Roof, Fence
+- Minecraft-style 1×1×1 cube placement. Walls are full cubes
 - Rapier raycast from camera through cursor picks the target cell. Hit normal decides:
   - Top face → cube above (vertical stacking)
   - Side face → cube adjacent in normal direction
   - Terrain hit → cube on terrain at the hit cell
-- Walls use the **line tool** (drag-to-build chain). First click sets anchor; second click fills cells from anchor to cursor; anchor advances to last placed cube so subsequent clicks extend naturally — perpendicular cursor moves trace L-bends sharing the corner cube
-- Other forms (lanterns, tables, etc.) use **single-click** placement; they stack onto wall tops, table tops, etc. via the same raycast
-- `Form::placement_style()` routes between `Single` and `Line` (Stage 2 will add `Replace` for door/window insertion into walls)
-- R rotates single-piece forms (no effect on cube-symmetric walls)
-- Buildings persist across save/load (Vec3 transforms today; cube-cell save format is a follow-up)
+- Walls use the **line tool** (drag-to-build chain). First click sets anchor; second click fills cells from anchor to cursor; anchor advances to last placed cube so perpendicular cursor moves trace L-bends sharing the corner cube
+- Floors use **paint** (hold and drag stamps tiles, whole drag = one undo)
+- Doors and Windows use **Replace** (click an existing wall to swap in)
+- Tools: Place / Remove. Bottom hotbar with 6-swatch piece selector
+- Buildings persist across save/load (Vec3 transforms; cube-cell save format is a follow-up)
+
+## Decoration mode (magnetic-continuous, DEC-021)
+- N key toggles. Mutually exclusive with Build. Owns Bed, Chair, Lantern, Table, Bench, Campfire, Barrel, Bucket, FlowerPot, Wreath, Chest, and all `Form::Interior` items (~1000 LowPoly Interior pack)
+- Magnetic-continuous placement: cursor slides the piece along its attach surface (terrain top, floor top, wall face, furniture top). v1 ships fine 0.1m grid; v2 adds anchor magnets (cell centres, wall mid-points, neighbour edges) with `Alt` to break
+- Rotation: 15-degree steps (`R` / `Shift+R`); `Alt+R` for continuous
+- Tools: Place / Move / Remove. Move picks up a placed piece, carries it on the cursor, drops on next click (no inventory churn)
+- UI: bottom hotbar (tools + selected thumbnail + recent-picks quickbar of 8 slots, in-memory) plus right-side catalog (1000 thumbnails, search, categories)
+- Hover and held pieces show subtle highlights (cyan / red / gentle pulse)
+- Single shared undo / redo stack across both modes (`EditHistory`)
+- Inventory consumed same as Build; `INFINITE_RESOURCES = true` cheat covers both modes during development
 
 ## NPC Animals
 - Rabbits: grassland, meadow
