@@ -5,7 +5,8 @@ use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
 
-use crate::building::{spawn_placed_building, PlacedBuilding};
+use crate::building::spawn_placed_building;
+use crate::edit::PlacedItem;
 use crate::inventory::{Inventory, InventoryChanged};
 use crate::items::ItemRegistry;
 use crate::memory::{CellMemory, Journal, JournalEntry, WorldMemory};
@@ -187,7 +188,7 @@ fn auto_save(
     terrain: Res<Terrain>,
     gathered: Res<GatheredCells>,
     player_query: Query<&Transform, With<Player>>,
-    buildings: Query<(&PlacedBuilding, &Transform)>,
+    buildings: Query<(&PlacedItem, &Transform)>,
     action_state: Res<leafwing_input_manager::prelude::ActionState<crate::input::Action>>,
 ) {
     save_timer.timer.tick(time.delta());

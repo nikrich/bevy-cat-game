@@ -8,8 +8,9 @@ use bevy::prelude::*;
 use bevy_egui::{egui, EguiContexts, EguiPrimaryContextPass};
 
 use crate::edit::{apply_redo, apply_undo, EditHistory};
+use crate::edit::PlacedItem;
 use super::{
-    refresh_build_preview, BuildMode, BuildTool, PlaceableItems, PlacedBuilding,
+    refresh_build_preview, BuildMode, BuildTool, PlaceableItems,
 };
 use crate::inventory::{Inventory, InventoryChanged};
 use crate::items::{InteriorCatalog, ItemRegistry, ItemTags};
@@ -47,7 +48,7 @@ fn draw_build_tool_hotbar(
     mut materials: ResMut<Assets<StandardMaterial>>,
     mut inventory: ResMut<Inventory>,
     mut inv_events: MessageWriter<InventoryChanged>,
-    placed_q: Query<(Entity, &Transform, &PlacedBuilding)>,
+    placed_q: Query<(Entity, &Transform, &PlacedItem)>,
     catalog: Res<InteriorCatalog>,
     mut indoor_settings: ResMut<crate::camera::occluder_fade::IndoorRevealSettings>,
 ) -> Result {

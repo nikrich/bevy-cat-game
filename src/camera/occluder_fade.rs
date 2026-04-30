@@ -12,7 +12,7 @@
 use bevy::prelude::*;
 use std::collections::HashMap;
 
-use crate::building::PlacedBuilding;
+use crate::edit::PlacedItem;
 use crate::items::{Form, ItemRegistry, ItemTags};
 use crate::player::Player;
 use crate::world::props::{Prop, PropKind};
@@ -126,8 +126,8 @@ fn fade_camera_occluders(
     cameras: Query<&GlobalTransform, With<GameCamera>>,
     players: Query<&GlobalTransform, With<Player>>,
     occluders: Query<
-        (Entity, &GlobalTransform, Option<&PropKind>, Option<&PlacedBuilding>),
-        (Or<(With<Prop>, With<PlacedBuilding>)>, Without<NoOcclude>),
+        (Entity, &GlobalTransform, Option<&PropKind>, Option<&PlacedItem>),
+        (Or<(With<Prop>, With<PlacedItem>)>, Without<NoOcclude>),
     >,
     registry: Res<ItemRegistry>,
     children_q: Query<&Children>,

@@ -275,7 +275,7 @@ fn compute_cursor_world(
     rapier: ReadRapierContext,
     mut cursor: ResMut<CursorState>,
     fades: Res<crate::camera::occluder_fade::OccluderFades>,
-    placed_q: Query<&crate::building::PlacedBuilding>,
+    placed_q: Query<&crate::edit::PlacedItem>,
     registry: Res<crate::items::ItemRegistry>,
 ) {
     cursor.cursor_world = None;

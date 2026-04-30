@@ -155,7 +155,7 @@ impl BuildMode {
     }
 }
 
-pub use crate::edit::PlacedItem as PlacedBuilding;
+pub use crate::edit::PlacedItem;
 
 #[derive(Component)]
 struct BuildPreview;
@@ -208,7 +208,7 @@ fn resolve_chain(anchor: Vec3, cursor: Vec3) -> (bool, f32, usize) {
 fn anchor_from_hit(
     cursor_world: Vec3,
     cursor_hit: Option<CursorHit>,
-    placed_q: &Query<(&Transform, &PlacedBuilding), Without<BuildPreview>>,
+    placed_q: &Query<(&Transform, &PlacedItem), Without<BuildPreview>>,
     registry: &ItemRegistry,
     terrain: &Terrain,
     noise: &WorldNoise,
@@ -279,7 +279,7 @@ fn compute_placement(
     cursor_hit: Option<CursorHit>,
     form: Form,
     registry: &ItemRegistry,
-    placed_q: &Query<(&Transform, &PlacedBuilding), Without<BuildPreview>>,
+    placed_q: &Query<(&Transform, &PlacedItem), Without<BuildPreview>>,
     terrain: &Terrain,
     noise: &WorldNoise,
 ) -> Vec3 {
@@ -310,7 +310,7 @@ fn compute_placement(
                 // Slanted face (e.g. roof eave) — fall through to terrain.
             }
         }
-        // Hit terrain or a non-PlacedBuilding entity — snap hit XZ to the
+        // Hit terrain or a non-PlacedItem entity — snap hit XZ to the
         // terrain cell *centre*. Cells span [i, i+1] (see
         // `world::terrain` quad emit), so centres are at `i + 0.5`. Walls
         // and floors snapped this way visually fill the terrain tile they
@@ -333,7 +333,7 @@ fn compute_placement(
 /// generous Y window so wall-on-floor stacking isn't flagged as overlap.
 fn is_position_occupied(
     pos: Vec3,
-    placed_q: &Query<(&Transform, &PlacedBuilding), Without<BuildPreview>>,
+    placed_q: &Query<(&Transform, &PlacedItem), Without<BuildPreview>>,
 ) -> bool {
     placed_q.iter().any(|(tf, _)| {
         (tf.translation.x - pos.x).abs() < OCCUPIED_RADIUS
@@ -447,7 +447,7 @@ fn blocking_rule_for(def: &crate::items::ItemDef) -> BlockingRule {
 fn footprint_clear(
     centre: Vec3,
     cells: IVec2,
-    placed_q: &Query<(&Transform, &PlacedBuilding), Without<BuildPreview>>,
+    placed_q: &Query<(&Transform, &PlacedItem), Without<BuildPreview>>,
     registry: &ItemRegistry,
     rule: BlockingRule,
 ) -> bool {
@@ -487,7 +487,7 @@ fn compute_interior_placement(
     cursor_hit: Option<CursorHit>,
     def: &crate::items::ItemDef,
     aabb: AabbBounds,
-    placed_q: &Query<(&Transform, &PlacedBuilding), Without<BuildPreview>>,
+    placed_q: &Query<(&Transform, &PlacedItem), Without<BuildPreview>>,
     registry: &ItemRegistry,
     terrain: &Terrain,
     noise: &WorldNoise,
@@ -941,7 +941,7 @@ fn update_preview(
     placeables: Res<PlaceableItems>,
     registry: Res<ItemRegistry>,
     inventory: Res<Inventory>,
-    placed_q: Query<(&Transform, &PlacedBuilding), Without<BuildPreview>>,
+    placed_q: Query<(&Transform, &PlacedItem), Without<BuildPreview>>,
     // Material is optional so interior previews (which use a SceneRoot or
     // an InteriorSpawnRequest with the material attached as a child) get
     // their Transform updated without us trying to tint a material they
@@ -1059,7 +1059,7 @@ fn update_single_preview(
     cursor_world: Vec3,
     cursor_hit: Option<CursorHit>,
     registry: &ItemRegistry,
-    placed_q: &Query<(&Transform, &PlacedBuilding), Without<BuildPreview>>,
+    placed_q: &Query<(&Transform, &PlacedItem), Without<BuildPreview>>,
     previews_q: &mut Query<
         (&mut Transform, Option<&MeshMaterial3d<StandardMaterial>>),
         With<BuildPreview>,
@@ -1132,7 +1132,7 @@ fn interior_preview_anchor(
     cursor_world: Vec3,
     cursor_hit: Option<CursorHit>,
     registry: &ItemRegistry,
-    placed_q: &Query<(&Transform, &PlacedBuilding), Without<BuildPreview>>,
+    placed_q: &Query<(&Transform, &PlacedItem), Without<BuildPreview>>,
     terrain: &Terrain,
     noise: &WorldNoise,
     catalog: &InteriorCatalog,
@@ -1155,7 +1155,7 @@ fn replace_preview_anchor(
     cursor_hit: Option<CursorHit>,
     form: Form,
     registry: &ItemRegistry,
-    placed_q: &Query<(&Transform, &PlacedBuilding), Without<BuildPreview>>,
+    placed_q: &Query<(&Transform, &PlacedItem), Without<BuildPreview>>,
 ) -> Option<(Vec3, f32, bool)> {
     let hit = cursor_hit?;
     let (wall_tf, wall_b) = placed_q.get(hit.entity).ok()?;
@@ -1176,7 +1176,7 @@ fn update_line_preview(
     item: ItemId,
     cursor_world: Vec3,
     inventory: &Inventory,
-    placed_q: &Query<(&Transform, &PlacedBuilding), Without<BuildPreview>>,
+    placed_q: &Query<(&Transform, &PlacedItem), Without<BuildPreview>>,
     previews_q: &mut Query<
         (&mut Transform, Option<&MeshMaterial3d<StandardMaterial>>),
         With<BuildPreview>,
@@ -1277,7 +1277,7 @@ fn place_building(
     asset_server: Res<AssetServer>,
     mut inventory: ResMut<Inventory>,
     mut inv_events: MessageWriter<InventoryChanged>,
-    placed_q: Query<(&Transform, &PlacedBuilding), Without<BuildPreview>>,
+    placed_q: Query<(&Transform, &PlacedItem), Without<BuildPreview>>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
     noise: Res<WorldNoise>,
@@ -1448,7 +1448,7 @@ fn place_replace(
     asset_server: &AssetServer,
     inventory: &mut Inventory,
     inv_events: &mut MessageWriter<InventoryChanged>,
-    placed_q: &Query<(&Transform, &PlacedBuilding), Without<BuildPreview>>,
+    placed_q: &Query<(&Transform, &PlacedItem), Without<BuildPreview>>,
     meshes: &mut ResMut<Assets<Mesh>>,
     materials: &mut ResMut<Assets<StandardMaterial>>,
     history: &mut EditHistory,
@@ -1520,7 +1520,7 @@ fn paint_stamp(
     asset_server: &AssetServer,
     inventory: &mut Inventory,
     inv_events: &mut MessageWriter<InventoryChanged>,
-    placed_q: &Query<(&Transform, &PlacedBuilding), Without<BuildPreview>>,
+    placed_q: &Query<(&Transform, &PlacedItem), Without<BuildPreview>>,
     meshes: &mut ResMut<Assets<Mesh>>,
     materials: &mut ResMut<Assets<StandardMaterial>>,
     terrain: &Terrain,
@@ -1574,7 +1574,7 @@ fn remove_clicked_piece(
     commands: &mut Commands,
     _cursor_world: Vec3,
     cursor_hit: Option<CursorHit>,
-    placed_q: &Query<(&Transform, &PlacedBuilding), Without<BuildPreview>>,
+    placed_q: &Query<(&Transform, &PlacedItem), Without<BuildPreview>>,
     registry: &ItemRegistry,
     inventory: &mut Inventory,
     inv_events: &mut MessageWriter<InventoryChanged>,
@@ -1616,7 +1616,7 @@ fn place_wall_line(
     asset_server: &AssetServer,
     inventory: &mut Inventory,
     inv_events: &mut MessageWriter<InventoryChanged>,
-    placed_q: &Query<(&Transform, &PlacedBuilding), Without<BuildPreview>>,
+    placed_q: &Query<(&Transform, &PlacedItem), Without<BuildPreview>>,
     meshes: &mut ResMut<Assets<Mesh>>,
     materials: &mut ResMut<Assets<StandardMaterial>>,
     terrain: &Terrain,
@@ -1716,7 +1716,7 @@ fn place_single(
     asset_server: &AssetServer,
     inventory: &mut Inventory,
     inv_events: &mut MessageWriter<InventoryChanged>,
-    placed_q: &Query<(&Transform, &PlacedBuilding), Without<BuildPreview>>,
+    placed_q: &Query<(&Transform, &PlacedItem), Without<BuildPreview>>,
     meshes: &mut ResMut<Assets<Mesh>>,
     materials: &mut ResMut<Assets<StandardMaterial>>,
     terrain: &Terrain,
@@ -1860,7 +1860,7 @@ pub fn spawn_placed_building(
             })
             .unwrap_or((Vec3::ZERO, Vec3::ONE));
         let mut e = commands.spawn((
-            PlacedBuilding { item },
+            PlacedItem { item },
             scaled,
             // Visibility and Transform are inherited; the children spawned
             // by resolve will inherit position from this parent entity.
@@ -1878,7 +1878,7 @@ pub fn spawn_placed_building(
 
     if let Some(path) = def.form.scene_path() {
         let mut e = commands.spawn((
-            PlacedBuilding { item },
+            PlacedItem { item },
             SceneRoot(asset_server.load(path)),
             scaled,
         ));
@@ -1894,7 +1894,7 @@ pub fn spawn_placed_building(
     if matches!(def.form, Form::Door) {
         let color = def.material.base_color();
         let mut e = commands.spawn((
-            PlacedBuilding { item },
+            PlacedItem { item },
             scaled,
             Visibility::Inherited,
         ));
@@ -1905,7 +1905,7 @@ pub fn spawn_placed_building(
     if matches!(def.form, Form::Window) {
         let color = def.material.base_color();
         let mut e = commands.spawn((
-            PlacedBuilding { item },
+            PlacedItem { item },
             scaled,
             Visibility::Inherited,
         ));
@@ -1928,7 +1928,7 @@ pub fn spawn_placed_building(
         mat.emissive = LinearRgba::new(2.5, 1.6, 0.5, 1.0);
     }
     let mut e = commands.spawn((
-        PlacedBuilding { item },
+        PlacedItem { item },
         Mesh3d(meshes.add(mesh)),
         MeshMaterial3d(materials.add(mat)),
         scaled,
