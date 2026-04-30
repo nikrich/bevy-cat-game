@@ -10,7 +10,8 @@
 
 use bevy::prelude::*;
 
-use crate::building::{spawn_placed_building, BuildMode, PlacedBuilding};
+use super::placed_item::PlacedItem;
+use crate::building::{spawn_placed_building, BuildMode};
 use crate::inventory::{Inventory, InventoryChanged};
 use crate::items::{InteriorCatalog, ItemId, ItemRegistry};
 
@@ -88,7 +89,7 @@ fn undo_redo_hotkeys(
     mut materials: ResMut<Assets<StandardMaterial>>,
     mut inventory: ResMut<Inventory>,
     mut inv_events: MessageWriter<InventoryChanged>,
-    placed_q: Query<(Entity, &Transform, &PlacedBuilding)>,
+    placed_q: Query<(Entity, &Transform, &PlacedItem)>,
     catalog: Res<InteriorCatalog>,
 ) {
     if build_mode.is_none() {
@@ -255,7 +256,7 @@ pub fn apply_redo(
     materials: &mut ResMut<Assets<StandardMaterial>>,
     inventory: &mut Inventory,
     inv_events: &mut MessageWriter<InventoryChanged>,
-    placed_q: &Query<(Entity, &Transform, &PlacedBuilding)>,
+    placed_q: &Query<(Entity, &Transform, &PlacedItem)>,
     catalog: &InteriorCatalog,
 ) {
     let Some(op) = history.redo.pop() else { return };

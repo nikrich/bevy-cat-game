@@ -6,7 +6,7 @@ pub mod placed_item;
 
 pub use highlight::HighlightPlugin;
 pub use history::{apply_redo, apply_undo, BuildOp, EditHistory, PieceRef};
-// pub use placed_item::PlacedItem lands in Task 4.
+pub use placed_item::PlacedItem;
 
 pub struct EditPlugin;
 

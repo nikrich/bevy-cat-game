@@ -1,1 +1,8 @@
-//! Placeholder -- contents land in Task 4.
+use bevy::prelude::*;
+
+use crate::items::ItemId;
+
+#[derive(Component)]
+pub struct PlacedItem {
+    pub item: ItemId,
+}

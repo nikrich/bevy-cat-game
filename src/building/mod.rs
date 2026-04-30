@@ -155,10 +155,7 @@ impl BuildMode {
     }
 }
 
-#[derive(Component)]
-pub struct PlacedBuilding {
-    pub item: ItemId,
-}
+pub use crate::edit::PlacedItem as PlacedBuilding;
 
 #[derive(Component)]
 struct BuildPreview;
