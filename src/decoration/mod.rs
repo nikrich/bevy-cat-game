@@ -6,6 +6,7 @@ pub mod catalog_ui;
 pub mod hotbar_ui;
 pub mod interior;
 pub mod move_tool;
+pub mod place_tool;
 pub mod placement;
 
 use crate::input::{Action, CursorState};
@@ -20,6 +21,7 @@ impl Plugin for DecorationPlugin {
                 toggle_decoration_mode,
                 interior::resolve_interior_spawns,
                 placement::update_preview,
+                place_tool::place_decoration,
             ),
         );
         app.add_systems(EguiPrimaryContextPass, catalog_ui::draw_decoration_catalog);
