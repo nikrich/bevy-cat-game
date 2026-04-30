@@ -1,5 +1,25 @@
 # Session Journal
 
+## 2026-04-30 -- Phase 2 build pivot: snap algorithm scrapped, Minecraft cube placement shipped
+
+**What shipped:** Phase 2 W2.1/W2.2/W2.3/W2.4 went in as the snap-point algorithm per spec, then got fully replaced over the same session with **Minecraft-style cube placement** (DEC-020). Walls are now true 1×1×1 cubes (`Cuboid::new(1.0, 1.0, 1.0)`, lift 0.5, height 1.0). Cursor uses a rapier raycast against colliders (`CursorState.cursor_hit`), and `compute_placement` decides target cell from hit point + normal — top face stacks, side face places adjacent, terrain hit places on terrain. Line tool keeps the chain UX: anchor.y carries the wall's center Y, `segment_end` advances to the last placed cube so perpendicular cursor moves trace L-bends sharing the corner cube. New `Form::placement_style()` returns `Single | Line` and replaces the hardcoded `matches!(form, Form::Wall)` routing checks.
+
+**What got deleted in cleanup pass:**
+- Dead Phase 2 W2.1/W2.2 metadata in `src/items/form.rs`: `SnapPoint`, `SnapKind`, `Category`, `snap_points()`, `cozy_value()`, `build_time_secs()`, plus ~150 lines of const SnapPoint tables. Zero call sites once the snap algorithm was scrapped.
+- `WallCollision` component + `push_player_out_of_walls` system in `src/building/collision.rs`. Hand-rolled penetration system was unregistered ages ago in favour of rapier; cube migration confirmed the rapier path works, so the dead code is gone.
+
+**Lessons worth carrying forward:**
+- **Iso-camera projection breaks any "find pieces near cursor cell" heuristic.** When the cursor visually points at a wall's top, its ground-plane projection lands a cell or two behind the wall. Heuristic search radii partially compensate but always leave bug surface. The right fix is a **camera-direction rapier raycast** that returns the exact collider the camera ray hits — no iso math, no guessing.
+- **Don't conflate "cursor position" with "placement target".** Cursor picks the column; the *ghost mesh* is the placement target. Once we made the ghost auto-rise to the column top (anchor + per-cell stacking), the player only needs to read the ghost — they no longer have to mentally project the cursor onto the right surface. This UX framing came from the user, not the spec.
+- **A spec is a hypothesis, not a contract.** The W2.1-W2.4 snap-point pillar was the spec's #1 build-feel idea. Multiple iterations confirmed it fights iso projection and hides ghost behaviour from the player. Throwing it out and pivoting to cube placement was the right call. Leave the spec, write the new direction in `decisions.md` (DEC-020), keep moving.
+- **Inventory cheats during build-tool playtest.** `INFINITE_RESOURCES = true` const + F2 hotkey to top up. Lets the focus stay on the placement model instead of the meta-loop of crafting / refilling. Flip to `false` before shipping.
+
+**Open threads (next session):**
+- Stage 2 of Phase 2: window/door insertion into walls with plank refund. Drops cleanly into `compute_placement` as a new `PlacementStyle::Replace` variant — when ghost is a window/door and the click hits a wall, despawn the wall and spawn the new piece at the same transform; refund the wall's plank cost.
+- Walls in line tool don't always line up at corners (user noted, deferred). Likely a 1-cell off-by-one in the corner-sharing logic; revisit when corner pieces become unsightly enough.
+- Save format still serializes raw `Transform` per `PlacedBuilding`. A `HashMap<IVec3, ItemId>` cube-cell save is the natural next refactor once the cube model is fully proven out — not urgent.
+- Spec `spec/phases/03-build-feel.md` is stale. The snap-point pillar is dead; the spec needs a rewrite around cube placement before Phase 2 can be "closed" in the Phase 0 / Phase 1 pattern.
+
 ## 2026-04-29 -- Phase 1 closed (13 shipped + 2 accepted deferrals)
 
 **Closure:** Phase 1 (`spec/phases/02-terrain.md`) shipped 13 of 15 work items: vertex-grid terrain (W1.1/W1.2/W1.5), all five brushes (W1.10), auto-flatten API (W1.11), brush hotbar UI (W1.14), edit persistence including biome paint (W1.15), water/props/animals/gathering migrations (W1.6-W1.9), partial W1.4 (procedural noise tile), plus three bonus follow-ups not in spec (props snap with terrain, paint-driven prop respawn, pop animation on painted props). W1.3 was rejected per art direction (DEC-018). W1.4 full atlas and W1.12/W1.13 navmesh are deferred (DEC-019).

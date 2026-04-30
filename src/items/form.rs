@@ -12,6 +12,24 @@ pub enum SnapMode {
     Edge,
 }
 
+/// Placement interaction model for a `Form`. Drives the routing decision
+/// in `building::place_building` and `building::update_preview` — the
+/// alternative would be hardcoded `matches!(form, Form::Wall)` checks
+/// scattered through both systems, which doesn't extend to the next batch
+/// of forms (fences, floor tiling, door-into-wall replacement, etc.).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PlacementStyle {
+    /// One click = one piece. Cursor-aware face-based stacking.
+    /// Used by all furniture, decorations, and the unfinished Door/Window
+    /// (which will move to `Replace` in Stage 2 of Phase 2).
+    Single,
+    /// Two-click line tool with a continuous-mode anchor. First click sets
+    /// the anchor; subsequent clicks fill cells from anchor to cursor and
+    /// advance the anchor to the last placed cube. Used by `Form::Wall`
+    /// today; future fences / floor-tile chains slot in here.
+    Line,
+}
+
 /// Visual / behavioural archetype. Pairs with a `Material` to form an item.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum Form {
@@ -135,7 +153,7 @@ impl Form {
         match self {
             // (w, h, radius_frac of min(w,h))
             Form::Floor => (1.0, 0.18, 0.10),
-            Form::Wall => (0.55, 1.0, 0.08),
+            Form::Wall => (1.0, 1.0, 0.05),
             Form::Door => (0.50, 1.0, 0.15),
             Form::Window => (0.95, 0.85, 0.18),
             Form::Roof => (1.0, 0.20, 0.08),
@@ -181,7 +199,7 @@ impl Form {
     pub fn placement_lift(self) -> f32 {
         match self {
             Form::Floor => 0.06,
-            Form::Wall => 0.80,
+            Form::Wall => 0.50,
             Form::Door => 0.85,
             Form::Window => 0.40,
             Form::Roof => 0.09,
@@ -202,7 +220,7 @@ impl Form {
     pub fn placement_height(self) -> f32 {
         match self {
             Form::Floor => 0.12,
-            Form::Wall => 1.60,
+            Form::Wall => 1.00,
             Form::Door => 1.70,
             Form::Window => 0.80,
             Form::Roof => 0.18,
@@ -215,6 +233,15 @@ impl Form {
             Form::Wreath => 0.40,
             Form::Stew => 0.44,
             _ => 0.30,
+        }
+    }
+
+    /// How the build system should interact with this form. See
+    /// [`PlacementStyle`] for the routing semantics.
+    pub fn placement_style(self) -> PlacementStyle {
+        match self {
+            Form::Wall => PlacementStyle::Line,
+            _ => PlacementStyle::Single,
         }
     }
 
@@ -238,7 +265,7 @@ impl Form {
             Form::Chair => Mesh::from(Cuboid::new(0.5, 0.7, 0.5)),
             Form::Table => Mesh::from(Cuboid::new(1.1, 0.5, 0.7)),
             Form::Floor => Mesh::from(Cuboid::new(1.0, 0.12, 1.0)),
-            Form::Wall => Mesh::from(Cuboid::new(1.0, 1.6, 0.15)),
+            Form::Wall => Mesh::from(Cuboid::new(1.0, 1.0, 1.0)),
             Form::Door => Mesh::from(Cuboid::new(0.9, 1.7, 0.12)),
             Form::Window => Mesh::from(Cuboid::new(0.9, 0.8, 0.12)),
             Form::Roof => Mesh::from(Cuboid::new(1.2, 0.18, 1.2)),
@@ -246,3 +273,4 @@ impl Form {
         }
     }
 }
+

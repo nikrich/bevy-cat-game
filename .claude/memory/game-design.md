@@ -55,12 +55,17 @@ A peaceful, lifelong world-crafting game where you play as a bipedal cat explori
 - Mushroom x2 + Bush -> Stew
 - Flower x3 + Bush -> Wreath
 
-## Building
-- Grid-snapped placement on terrain
-- Ghost preview follows mouse cursor
-- R to rotate (90 degree increments)
-- Placeable items: Fence, Bench, Lantern, FlowerPot, Wreath
-- Buildings persist across save/load
+## Building (cube-placement model, DEC-020)
+- Minecraft-style 1×1×1 cube placement. Walls are full cubes; furniture/decorations keep their natural meshes inside cube cells
+- Rapier raycast from camera through cursor picks the target cell. Hit normal decides:
+  - Top face → cube above (vertical stacking)
+  - Side face → cube adjacent in normal direction
+  - Terrain hit → cube on terrain at the hit cell
+- Walls use the **line tool** (drag-to-build chain). First click sets anchor; second click fills cells from anchor to cursor; anchor advances to last placed cube so subsequent clicks extend naturally — perpendicular cursor moves trace L-bends sharing the corner cube
+- Other forms (lanterns, tables, etc.) use **single-click** placement; they stack onto wall tops, table tops, etc. via the same raycast
+- `Form::placement_style()` routes between `Single` and `Line` (Stage 2 will add `Replace` for door/window insertion into walls)
+- R rotates single-piece forms (no effect on cube-symmetric walls)
+- Buildings persist across save/load (Vec3 transforms today; cube-cell save format is a follow-up)
 
 ## NPC Animals
 - Rabbits: grassland, meadow

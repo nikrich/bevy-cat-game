@@ -17,6 +17,7 @@
 
 use bevy::prelude::*;
 use bevy::window::PrimaryWindow;
+use bevy_rapier3d::prelude::{QueryFilter, ReadRapierContext};
 use leafwing_input_manager::plugin::InputManagerSystem;
 use leafwing_input_manager::prelude::*;
 
@@ -163,6 +164,12 @@ impl Action {
         }
         map.insert(Self::HotbarNext, GamepadButton::RightTrigger);
         map.insert(Self::HotbarPrev, GamepadButton::LeftTrigger);
+        // Keyboard cycle so the player can reach placeables past slot 9
+        // (Wall variants live at slots 12-15) without using the inventory UI.
+        map.insert(Self::HotbarNext, KeyCode::KeyE);
+        map.insert(Self::HotbarPrev, KeyCode::KeyQ);
+        map.insert(Self::HotbarNext, MouseScrollDirection::DOWN);
+        map.insert(Self::HotbarPrev, MouseScrollDirection::UP);
 
         // Camera zoom — declared for binding completeness; consumer lands
         // when the camera grows zoom controls.
@@ -179,7 +186,15 @@ impl Action {
 #[derive(Resource, Default)]
 pub struct CursorState {
     /// World position under the mouse cursor, raycast against the Y=0 plane.
+    /// Used for terrain-relative XZ snapping where the actual surface
+    /// elevation doesn't matter (gathering distance, basic placement grid).
     pub cursor_world: Option<Vec3>,
+    /// Rapier raycast hit against actual world geometry (terrain trimesh +
+    /// placed building colliders + player). This is the iso-correct "what
+    /// pixel are you visually pointing at" — the build system uses it to
+    /// stack pieces on tops of walls / tables instead of guessing from the
+    /// flat-ground projection.
+    pub cursor_hit: Option<CursorHit>,
     /// True when the pointer is over an interactive UI node this frame.
     pub pointer_over_ui: bool,
     /// True if the most recent meaningful input came from a gamepad.
@@ -188,6 +203,16 @@ pub struct CursorState {
     /// world click. False when the pointer is over UI or the crafting menu
     /// is open.
     pub world_click: bool,
+}
+
+/// Geometry-aware hit returned by `compute_cursor_world`'s rapier raycast.
+/// `entity` is the collider entity (terrain chunk, placed building, player)
+/// — consumers check what kind of entity it is via component queries.
+#[derive(Clone, Copy, Debug)]
+pub struct CursorHit {
+    pub entity: Entity,
+    pub point: Vec3,
+    pub normal: Vec3,
 }
 
 /// Iso-rotated movement vector. Convert leafwing's raw `Move` axis pair into
@@ -218,23 +243,39 @@ pub fn raw_movement(action_state: &ActionState<Action>) -> Vec2 {
 fn compute_cursor_world(
     windows: Query<&Window, With<PrimaryWindow>>,
     camera_query: Query<(&Camera, &GlobalTransform), With<GameCamera>>,
+    rapier: ReadRapierContext,
     mut cursor: ResMut<CursorState>,
 ) {
     cursor.cursor_world = None;
+    cursor.cursor_hit = None;
     let Ok(window) = windows.single() else { return };
     let Ok((camera, camera_gt)) = camera_query.single() else { return };
     let Some(cursor_pos) = window.cursor_position() else { return };
     let Ok(ray) = camera.viewport_to_world(camera_gt, cursor_pos) else { return };
 
+    // Y=0 ground plane — kept for legacy consumers and as a fallback when
+    // the rapier raycast misses everything.
     let denom = ray.direction.y;
-    if denom.abs() < 0.001 {
-        return;
+    if denom.abs() >= 0.001 {
+        let t = -ray.origin.y / denom;
+        if t >= 0.0 {
+            cursor.cursor_world = Some(ray.origin + *ray.direction * t);
+        }
     }
-    let t = -ray.origin.y / denom;
-    if t < 0.0 {
-        return;
+
+    // Rapier raycast: returns the closest collider the camera ray hits.
+    // `solid=true` so rays starting inside a collider report time_of_impact=0.
+    if let Ok(ctx) = rapier.single() {
+        if let Some((entity, hit)) =
+            ctx.cast_ray_and_get_normal(ray.origin, *ray.direction, 1000.0, true, QueryFilter::default())
+        {
+            cursor.cursor_hit = Some(CursorHit {
+                entity,
+                point: hit.point,
+                normal: hit.normal,
+            });
+        }
     }
-    cursor.cursor_world = Some(ray.origin + *ray.direction * t);
 }
 
 fn update_cursor_state(
