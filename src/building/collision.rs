@@ -51,13 +51,36 @@ pub fn attach_for_form(entity: &mut EntityCommands, form: Form, transform: &Tran
             entity.insert((Collider::cuboid(0.5, 0.5, 0.5), RigidBody::Fixed));
         }
         Form::Door => {
-            // 0.9 × 1.7 × 0.12 — won't be migrated to a cube until the
-            // door-into-wall replacement flow lands (Stage 2 of Phase 2).
-            entity.insert((Collider::cuboid(0.45, 0.85, 0.06), RigidBody::Fixed));
+            // Compound: header + 2 jambs only — the bottom 0.85 × 0.7 of the
+            // 1×1×0.18 footprint is open so the cat walks through. Matches
+            // the visual frame built by `spawn_door_composite`.
+            let header = (
+                Vec3::new(0.0, 0.425, 0.0),
+                Quat::IDENTITY,
+                Collider::cuboid(0.5, 0.075, 0.09),
+            );
+            let left_jamb = (
+                Vec3::new(-0.425, -0.075, 0.0),
+                Quat::IDENTITY,
+                Collider::cuboid(0.075, 0.425, 0.09),
+            );
+            let right_jamb = (
+                Vec3::new(0.425, -0.075, 0.0),
+                Quat::IDENTITY,
+                Collider::cuboid(0.075, 0.425, 0.09),
+            );
+            entity.insert((
+                Collider::compound(vec![header, left_jamb, right_jamb]),
+                RigidBody::Fixed,
+            ));
         }
         Form::Window => {
-            // 0.9 × 0.8 × 0.12 — same Stage 2 caveat as Door.
-            entity.insert((Collider::cuboid(0.45, 0.4, 0.06), RigidBody::Fixed));
+            // Solid 1×1×0.18 cuboid. The composite visual reads as a window
+            // (frame + pane) but cats can't squeeze through the 0.6 m gap
+            // between the jambs (their capsule diameter is 0.6 m, so it'd
+            // be a hairsbreadth pass-through if the collider only covered
+            // the frame).
+            entity.insert((Collider::cuboid(0.5, 0.5, 0.09), RigidBody::Fixed));
         }
         Form::Interior => {
             // Default 1m cube collider for runtime-loaded interior items.

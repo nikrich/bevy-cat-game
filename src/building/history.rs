@@ -59,6 +59,10 @@ pub enum BuildOp {
     /// despawn many at once. `entity` starts `None`; undo respawns each
     /// and records the new entity ids.
     Removed(Vec<PieceRef>),
+    /// Atomic swap: `old` was despawned + refunded, `new` was spawned in
+    /// its place. Used by `PlacementStyle::Replace` (door/window into wall).
+    /// Undo respawns `old` and despawns `new`; redo does the reverse.
+    Replaced { old: PieceRef, new: PieceRef },
 }
 
 #[derive(Clone, Debug)]
@@ -207,6 +211,35 @@ pub fn apply_undo(
                 .collect();
             BuildOp::Removed(respawned)
         }
+        BuildOp::Replaced { old, new } => {
+            // Undo of swap: despawn `new`, respawn `old`. Inventory mirrors
+            // the original swap (refund `new`, consume `old`) so the player
+            // ends up exactly where they were before the click.
+            if let Some(e) = new.entity {
+                commands.entity(e).despawn();
+            }
+            inventory.add(new.item, 1);
+            inv_events.write(InventoryChanged {
+                item: new.item,
+                new_count: inventory.count(new.item),
+            });
+            let respawned = spawn_placed_building(
+                commands, registry, asset_server, meshes, materials, catalog, old.item,
+                old.transform,
+            );
+            if inventory.count(old.item) > 0 {
+                let entry = inventory.items.entry(old.item).or_insert(0);
+                *entry = entry.saturating_sub(1);
+                inv_events.write(InventoryChanged {
+                    item: old.item,
+                    new_count: inventory.count(old.item),
+                });
+            }
+            BuildOp::Replaced {
+                old: PieceRef { entity: respawned, ..old },
+                new: PieceRef { entity: None, ..new },
+            }
+        }
     };
     history.redo.push(inverse);
 }
@@ -286,6 +319,44 @@ pub fn apply_redo(
                 })
                 .collect();
             BuildOp::Removed(cleared)
+        }
+        BuildOp::Replaced { old, new } => {
+            // Redo of swap: despawn `old`, respawn `new`. Mirror of the
+            // original `place_replace`. Re-find `old` by transform if its
+            // stored entity id is stale.
+            let target = old.entity.or_else(|| {
+                placed_q
+                    .iter()
+                    .find(|(_, tf, b)| {
+                        b.item == old.item
+                            && tf.translation.distance(old.transform.translation) < 0.05
+                    })
+                    .map(|(e, _, _)| e)
+            });
+            if let Some(e) = target {
+                commands.entity(e).despawn();
+            }
+            inventory.add(old.item, 1);
+            inv_events.write(InventoryChanged {
+                item: old.item,
+                new_count: inventory.count(old.item),
+            });
+            let respawned = spawn_placed_building(
+                commands, registry, asset_server, meshes, materials, catalog, new.item,
+                new.transform,
+            );
+            if inventory.count(new.item) > 0 {
+                let entry = inventory.items.entry(new.item).or_insert(0);
+                *entry = entry.saturating_sub(1);
+                inv_events.write(InventoryChanged {
+                    item: new.item,
+                    new_count: inventory.count(new.item),
+                });
+            }
+            BuildOp::Replaced {
+                old: PieceRef { entity: None, ..old },
+                new: PieceRef { entity: respawned, ..new },
+            }
         }
     };
     history.undo.push(forward);

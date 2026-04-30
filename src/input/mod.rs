@@ -209,6 +209,11 @@ pub struct CursorState {
     pub cursor_hit: Option<CursorHit>,
     /// True when the pointer is over an interactive UI node this frame.
     pub pointer_over_ui: bool,
+    /// True when an egui widget has keyboard focus (text edit, etc.). Game
+    /// systems that respond to single-key hotkeys (build toggle, camera
+    /// rotation, hotbar cycle) should bail when this is set so typing in
+    /// the decoration-catalog search bar doesn't fire `B`/`Q`/`E`/etc.
+    pub keyboard_over_ui: bool,
     /// True if the most recent meaningful input came from a gamepad.
     pub using_gamepad: bool,
     /// True only if a left-mouse press this frame should be treated as a
@@ -317,14 +322,22 @@ fn update_cursor_state(
     // egui has its own UI tree (build tool palette, decoration catalog,
     // brush hotbar, crafting menu). `wants_pointer_input` is true when the
     // cursor is over an egui widget OR egui is dragging something — that's
-    // the right gate for "should world clicks be suppressed?".
-    let egui_hit = egui_contexts
+    // the right gate for "should world clicks be suppressed?". A second
+    // pass picks up keyboard focus separately so typing in egui text fields
+    // doesn't leak through to leafwing-bound hotkeys.
+    let (egui_hit, egui_kb) = egui_contexts
         .ctx_mut()
         .ok()
-        .map(|ctx| ctx.wants_pointer_input() || ctx.is_pointer_over_area())
-        .unwrap_or(false);
+        .map(|ctx| {
+            (
+                ctx.wants_pointer_input() || ctx.is_pointer_over_area(),
+                ctx.wants_keyboard_input(),
+            )
+        })
+        .unwrap_or((false, false));
 
     cursor.pointer_over_ui = bevy_ui_hit || egui_hit;
+    cursor.keyboard_over_ui = egui_kb;
 
     // Mouse-left isn't bound to a leafwing action; we read it raw here so
     // the UI focus pass can gate world clicks against UI/crafting state in

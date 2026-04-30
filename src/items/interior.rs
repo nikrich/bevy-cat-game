@@ -63,6 +63,37 @@ pub struct InteriorItem {
     /// Coarse category, derived by stripping the trailing `.NNN` suffix.
     pub category: String,
     pub source: InteriorSource,
+    /// Pre-scale local-space AABB of the asset, computed at startup from
+    /// the GLB's POSITION accessor min/max with the node's local TRS
+    /// (rotation + scale, translation dropped) applied. Drives footprint
+    /// calculation + bottom-of-AABB lift at placement time. `None` only if
+    /// the GLB JSON parser failed to find bounds (item then defaults to a
+    /// 1×1×1 footprint centred at the entity origin).
+    pub aabb_local: Option<AabbBounds>,
+}
+
+/// Min/max corners of an axis-aligned bounding box in node-local space.
+/// Plain Vec3 pair (instead of bevy's `Aabb`) so it stays serializable and
+/// dependency-free for the catalog.
+#[derive(Clone, Copy, Debug)]
+pub struct AabbBounds {
+    pub min: Vec3,
+    pub max: Vec3,
+}
+
+impl AabbBounds {
+    pub fn size(self) -> Vec3 {
+        self.max - self.min
+    }
+    pub fn center(self) -> Vec3 {
+        (self.min + self.max) * 0.5
+    }
+    /// Round size.x and size.z up to integer cube cells. Used to pick the
+    /// asset's footprint on the cube grid for snap-to-grid placement.
+    pub fn footprint_cells(self, scale: f32) -> IVec2 {
+        let s = self.size() * scale;
+        IVec2::new(s.x.ceil() as i32, s.z.ceil() as i32).max(IVec2::splat(1))
+    }
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -79,6 +110,13 @@ impl InteriorCatalog {
             InteriorSource::First => &self.gltf_first,
             InteriorSource::Second => &self.gltf_second,
         }
+    }
+
+    /// Look up an interior item's pre-scale AABB by node name. `None` if the
+    /// name isn't in the catalog or the GLB parser couldn't extract bounds.
+    pub fn aabb_for(&self, name: &str) -> Option<AabbBounds> {
+        let idx = *self.by_name.get(name)?;
+        self.items.get(idx)?.aabb_local
     }
 }
 
@@ -98,11 +136,16 @@ pub fn register_interior_items(
         (INTERIOR_SECOND_PATH, InteriorSource::Second),
     ] {
         let disk_path = format!("{}/{}", manifest_root, asset_rel);
-        match read_glb_node_names(&disk_path) {
-            Ok(names) => {
-                for name in names {
-                    let category = strip_index_suffix(&name);
-                    items.push(InteriorItem { name, category, source });
+        match read_glb_nodes(&disk_path) {
+            Ok(parsed) => {
+                for node in parsed {
+                    let category = strip_index_suffix(&node.name);
+                    items.push(InteriorItem {
+                        name: node.name,
+                        category,
+                        source,
+                        aabb_local: node.aabb,
+                    });
                 }
             }
             Err(err) => {
@@ -151,11 +194,23 @@ fn strip_index_suffix(name: &str) -> String {
     name.to_string()
 }
 
-/// Pull node names out of a GLB's JSON chunk synchronously. We want this
-/// at Startup so registration completes before save loading runs; the
-/// async Gltf loader gives us the same info eventually but we can't wait
-/// on it for registration ordering.
-fn read_glb_node_names(disk_path: &str) -> Result<Vec<String>, String> {
+struct ParsedNode {
+    name: String,
+    aabb: Option<AabbBounds>,
+}
+
+/// Pull node names + per-node AABBs out of a GLB's JSON chunk synchronously.
+/// We want this at Startup so registration + footprint lookups complete
+/// before save loading or the first placement; the async Gltf loader gives
+/// us the same info eventually but can't be awaited from a startup system.
+///
+/// AABBs are computed by walking each node's mesh primitives, reading the
+/// POSITION accessor's `min`/`max` (mandatory in glTF for that accessor),
+/// transforming the 8 corners by the node's local TRS (rotation + scale —
+/// translation is dropped because it represents the source scene's grid
+/// layout, not intrinsic asset geometry), and unioning. The result is the
+/// asset's bounding box in the orientation it'll be spawned with.
+fn read_glb_nodes(disk_path: &str) -> Result<Vec<ParsedNode>, String> {
     use std::fs::File;
     use std::io::{Read, Seek, SeekFrom};
 
@@ -172,12 +227,118 @@ fn read_glb_node_names(disk_path: &str) -> Result<Vec<String>, String> {
         .map_err(|e| format!("read json: {e}"))?;
     let value: serde_json::Value =
         serde_json::from_slice(&json_bytes).map_err(|e| format!("parse: {e}"))?;
+
     let nodes = value
         .get("nodes")
         .and_then(|n| n.as_array())
         .ok_or_else(|| "no nodes array".to_string())?;
-    Ok(nodes
-        .iter()
-        .filter_map(|n| n.get("name").and_then(|n| n.as_str()).map(String::from))
-        .collect())
+    let meshes = value.get("meshes").and_then(|m| m.as_array());
+    let accessors = value.get("accessors").and_then(|a| a.as_array());
+
+    let mut out = Vec::with_capacity(nodes.len());
+    for n in nodes {
+        let Some(name) = n.get("name").and_then(|n| n.as_str()).map(String::from) else {
+            continue;
+        };
+        let aabb = node_aabb(n, meshes, accessors);
+        out.push(ParsedNode { name, aabb });
+    }
+    Ok(out)
+}
+
+fn node_aabb(
+    node: &serde_json::Value,
+    meshes: Option<&Vec<serde_json::Value>>,
+    accessors: Option<&Vec<serde_json::Value>>,
+) -> Option<AabbBounds> {
+    let mesh_idx = node.get("mesh").and_then(|m| m.as_u64())? as usize;
+    let mesh = meshes?.get(mesh_idx)?;
+    let primitives = mesh.get("primitives").and_then(|p| p.as_array())?;
+
+    // Local rotation + scale from the node's TRS. Translation is intentionally
+    // dropped (see fn doc) so the AABB describes the asset alone, not its
+    // position in the source scene.
+    let rotation = node
+        .get("rotation")
+        .and_then(|r| r.as_array())
+        .and_then(|arr| {
+            if arr.len() == 4 {
+                Some(Quat::from_xyzw(
+                    arr[0].as_f64()? as f32,
+                    arr[1].as_f64()? as f32,
+                    arr[2].as_f64()? as f32,
+                    arr[3].as_f64()? as f32,
+                ))
+            } else {
+                None
+            }
+        })
+        .unwrap_or(Quat::IDENTITY);
+    let scale = node
+        .get("scale")
+        .and_then(|s| s.as_array())
+        .and_then(|arr| {
+            if arr.len() == 3 {
+                Some(Vec3::new(
+                    arr[0].as_f64()? as f32,
+                    arr[1].as_f64()? as f32,
+                    arr[2].as_f64()? as f32,
+                ))
+            } else {
+                None
+            }
+        })
+        .unwrap_or(Vec3::ONE);
+
+    let mut total: Option<AabbBounds> = None;
+    for prim in primitives {
+        let pos_idx = prim
+            .get("attributes")
+            .and_then(|a| a.get("POSITION"))
+            .and_then(|p| p.as_u64())? as usize;
+        let acc = accessors?.get(pos_idx)?;
+        let min = acc.get("min").and_then(|m| m.as_array())?;
+        let max = acc.get("max").and_then(|m| m.as_array())?;
+        if min.len() != 3 || max.len() != 3 {
+            continue;
+        }
+        let lo = Vec3::new(
+            min[0].as_f64()? as f32,
+            min[1].as_f64()? as f32,
+            min[2].as_f64()? as f32,
+        );
+        let hi = Vec3::new(
+            max[0].as_f64()? as f32,
+            max[1].as_f64()? as f32,
+            max[2].as_f64()? as f32,
+        );
+        // Transform the 8 corners by node TRS and refit the AABB. Required
+        // because rotation can produce a tighter or looser AABB than just
+        // rotating min/max independently.
+        let corners = [
+            Vec3::new(lo.x, lo.y, lo.z),
+            Vec3::new(hi.x, lo.y, lo.z),
+            Vec3::new(lo.x, hi.y, lo.z),
+            Vec3::new(hi.x, hi.y, lo.z),
+            Vec3::new(lo.x, lo.y, hi.z),
+            Vec3::new(hi.x, lo.y, hi.z),
+            Vec3::new(lo.x, hi.y, hi.z),
+            Vec3::new(hi.x, hi.y, hi.z),
+        ];
+        let mut prim_min = Vec3::splat(f32::INFINITY);
+        let mut prim_max = Vec3::splat(f32::NEG_INFINITY);
+        for c in corners {
+            let p = rotation * (c * scale);
+            prim_min = prim_min.min(p);
+            prim_max = prim_max.max(p);
+        }
+        total = Some(match total {
+            Some(t) => AabbBounds {
+                min: t.min.min(prim_min),
+                max: t.max.max(prim_max),
+            },
+            None => AabbBounds { min: prim_min, max: prim_max },
+        });
+    }
+    total
 }

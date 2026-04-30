@@ -8,7 +8,7 @@ use super::terrain::{Terrain, CHUNK_CELLS};
 /// over chunk-local cells keep reading naturally.
 pub const CHUNK_SIZE: i32 = CHUNK_CELLS;
 const RENDER_DISTANCE: i32 = 2;
-const WORLD_SEED: u32 = 7;
+const WORLD_SEED: u32 = 142;
 /// Cap on chunk *data* generated per frame. The mesh + collider build for
 /// each newly-loaded chunk is paced separately by `regenerate_dirty_chunks`
 /// (see W1.2 in the Phase 1 spec).

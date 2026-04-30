@@ -33,6 +33,11 @@ pub enum PlacementStyle {
     /// piece). The whole drag becomes one undo entry. Used by `Form::Floor`
     /// so paving a room feels like painting tiles instead of clicking each.
     Paint,
+    /// Click an existing wall to swap it for this piece. Refunds the wall's
+    /// item to inventory. Used by `Form::Door` and `Form::Window` — opens
+    /// a door / window in a built wall instead of forcing the player to
+    /// remove the wall first then place a 1-cell-wide piece by hand.
+    Replace,
 }
 
 /// Visual / behavioural archetype. Pairs with a `Material` to form an item.
@@ -223,10 +228,11 @@ impl Form {
         }
     }
 
-    /// SceneRoot scale applied at placement. Interior GLB items ship at
-    /// roughly half the visual scale of our 1m cube grid — bumping them
-    /// to 2x makes a chair / bed feel like furniture instead of dollhouse
-    /// pieces. Everything else is already authored at world scale.
+    /// SceneRoot scale applied at placement. Interior items get 2× because
+    /// the LowPoly Interior pack ships at roughly half cube-grid scale —
+    /// without the bump a "bed" reads as a dollhouse prop. Footprint snap
+    /// uses this same scale (see `AabbBounds::footprint_cells`) so the
+    /// no-overlap grid stays consistent with what's drawn.
     pub fn placement_scale(self) -> f32 {
         match self {
             Form::Interior => 2.0,
@@ -252,8 +258,13 @@ impl Form {
         match self {
             Form::Floor => 0.06,
             Form::Wall => 0.50,
-            Form::Door => 0.85,
-            Form::Window => 0.40,
+            // Doors and windows replace a wall cube exactly: same lift +
+            // height = 0.5 / 1.0 means they sit dead-centre in the wall slot
+            // so the surrounding cubes stay aligned. Visual frame is built
+            // by `spawn_door_composite` / `spawn_window_composite` to fit
+            // inside the 1×1×0.18 footprint.
+            Form::Door => 0.50,
+            Form::Window => 0.50,
             Form::Roof => 0.09,
             Form::Fence => 0.30,
             Form::Bench => 0.175,
@@ -284,8 +295,8 @@ impl Form {
         match self {
             Form::Floor => 0.12,
             Form::Wall => 1.00,
-            Form::Door => 1.70,
-            Form::Window => 0.80,
+            Form::Door => 1.00,
+            Form::Window => 1.00,
             Form::Roof => 0.18,
             Form::Fence => 0.60,
             Form::Bench => 0.35,
@@ -311,6 +322,7 @@ impl Form {
         match self {
             Form::Wall => PlacementStyle::Line,
             Form::Floor => PlacementStyle::Paint,
+            Form::Door | Form::Window => PlacementStyle::Replace,
             _ => PlacementStyle::Single,
         }
     }
@@ -336,8 +348,12 @@ impl Form {
             Form::Table => Mesh::from(Cuboid::new(1.1, 0.5, 0.7)),
             Form::Floor => Mesh::from(Cuboid::new(1.0, 0.12, 1.0)),
             Form::Wall => Mesh::from(Cuboid::new(1.0, 1.0, 1.0)),
-            Form::Door => Mesh::from(Cuboid::new(0.9, 1.7, 0.12)),
-            Form::Window => Mesh::from(Cuboid::new(0.9, 0.8, 0.12)),
+            // Ghost only: the actual placed door/window spawns as a
+            // composite frame (see `spawn_door_composite`,
+            // `spawn_window_composite`). The 1×1×0.18 cuboid here shows
+            // the player exactly which wall slot the piece will land in.
+            Form::Door => Mesh::from(Cuboid::new(1.0, 1.0, 0.18)),
+            Form::Window => Mesh::from(Cuboid::new(1.0, 1.0, 0.18)),
             Form::Roof => Mesh::from(Cuboid::new(1.2, 0.18, 1.2)),
             // Asset-backed forms render via SceneRoot (see scene_path);
             // these procedural fallbacks are only used if asset loading
