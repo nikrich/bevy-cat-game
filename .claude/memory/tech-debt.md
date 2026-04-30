@@ -187,6 +187,16 @@
 - **Effort**: M
 - **Status**: Open
 
+## DEBT-022: Revisit utility AI crate adoption when ecosystem catches up to Bevy 0.18
+- **Added**: 2026-04-30
+- **Severity**: Low
+- **Area**: ai
+- **What**: Per DEC-022, Phase 5 hand-rolls a utility AI core under `src/ai/` because no utility AI crate currently targets Bevy 0.18 (`big-brain` on Codeberg is at 0.17, `bevy_observed_utility` at 0.15). The hand-roll mirrors `bevy_observed_utility`'s API shape on purpose so a future migration is mechanical
+- **Why**: Maintaining ~150 LOC of dispatcher code is cheap during Phase 5 but becomes friction by Phase 6 when scorer count grows and we want features the upstream crates already have (e.g. `bevy_observed_utility`'s post-order traversal scoring, ECS-observer-based action lifecycle). At that point a maintained upstream is a better deal than our own
+- **Fix when**: Either (a) `bevy_observed_utility` releases a Bevy 0.18-compatible version -- preferred path, since its ECS-observer architecture aligns with where Bevy itself is heading -- or (b) Phase 6 work requires features beyond the hand-roll's scope (cross-cat scorer composition, hot-reloadable scorer config, etc.). Migration is "swap our `Scorer`/`Picker`/`ActiveAction` types for theirs, keep our scorer functions"; estimated 1 session
+- **Effort**: M (1 session, contingent on upstream readiness)
+- **Status**: Open
+
 ## DEBT-021: W1.12 / W1.13 navmesh + override deferred to Phase 5
 - **Added**: 2026-04-29
 - **Severity**: Low
@@ -195,6 +205,46 @@
 - **Why**: Phase 1's player-facing payoff doesn't depend on a navmesh. Phase 5 is when NPC cats need to actually pathfind around terrain — that's the right cost-benefit moment, especially since `bevy_landmass`'s API surface differs from the spec-assumed `oxidized_navigation` and budget is non-trivial (1-2 sessions for the integration spike per the original DEC-021 risk note)
 - **Fix when**: Start of Phase 5 (NPC cats). Path will need updating because `bevy_landmass` has a different tile model than what DEC-021 / W1.12 originally assumed; treat the integration as fresh research at that point. Fallbacks if it doesn't fit: `vleue_navigator` or a hand-rolled grid navmesh on the existing 32×32 cell grid
 - **Effort**: L (1-2 sessions)
+- **Status**: Open
+
+## DEBT-023: Decoration ghost blocker misses wall intersections
+- **Added**: 2026-04-30
+- **Severity**: Low
+- **Area**: decoration/placement
+- **What**: `is_decoration_blocked` covers two cases — cursor-on-structural-top (placing on a wall) and ghost-centre-inside-wall (clipping). It misses the case where the ghost AABB extends INTO a wall but the centre stays clear (e.g. a 2m-deep bed pushed into a 1m wall). Tried full AABB-overlap-with-buffer first, but that false-positive-blocked any large interior item placed inside a small room (the bed AABB reached toward distant walls in a 5m room). Reverted to the narrow-but-tight checks.
+- **Why**: The right fix is footprint-aware: project the ghost's footprint cells onto the placed-piece grid and reject if any cell is occupied by a structural piece. The existing `footprint_clear` in `decoration/interior.rs` does exactly this for the cube-grid path, but it requires `IVec2` footprint cells rather than free-grid Vec3 dims. Adapting it to the magnetic-continuous flow is non-trivial and we don't want to slow the loop down by checking cells every frame in `update_preview`.
+- **Fix when**: When player feedback shows the false-negatives are common in real builds. Until then the narrow checks catch the obvious nonsense (chair on top of wall, ghost clipping fully into a wall) and AABB-edge-clipping is treated as accepted v1 behaviour.
+- **Effort**: M
+- **Status**: Open
+
+## DEBT-024: No building masking when player is inside
+- **Added**: 2026-04-30
+- **Severity**: Medium
+- **Area**: camera/occluder_fade, building
+- **What**: When the player walks into a built room, the building doesn't mask / dim / cut away cleanly — looks bad. Indoor reveal exists (X-ray) but the visual transition between outdoor and indoor view is jarring; walls and roof either fade fully or stay solid with no soft middle. Should look like the camera is "discovering" the interior, similar to Stardew Valley's roof slide-off or Cult of the Lamb's wall fade.
+- **Why**: Current `occluder_fade` does a binary fade-or-not based on indoor flag and structural-piece tag. No gradient, no smart culling, no "show me where the cat is".
+- **Fix when**: Phase 7 polish, or earlier if it becomes a major immersion blocker.
+- **Effort**: M
+- **Status**: Open
+
+## DEBT-025: Cursor cull mask too aggressive
+- **Added**: 2026-04-30
+- **Severity**: Medium
+- **Area**: camera/occluder_fade, input
+- **What**: The faded-occluder predicate in `compute_cursor_world` skips faded entities for the cursor raycast. Side effect: floors and entities BEHIND the player (between camera and player on the iso angle) get faded by indoor reveal and the cursor falls through them. Result is the cursor sometimes lands on terrain instead of the floor the player is standing on.
+- **Why**: The fade-skip rule was added to let the cursor reach interior items / floors that happen to be mid-fade. It overfires — anything currently fading (camera-line walls behind the camera, e.g.) also gets skipped, even though the cursor visibly points at a solid surface.
+- **Fix when**: When the wrong cursor target shows up in placement. The fix is probably to only skip OCCLUDER fades (camera-line walls between camera and player), not INDOOR-REVEAL fades (ceiling/upper-floor pieces above the player). The two fade reasons are merged in `OccluderFades` — splitting them is the real work.
+- **Effort**: M
+- **Status**: Open
+
+## DEBT-026: Remove tool should be a paint action for fast cleanup
+- **Added**: 2026-04-30
+- **Severity**: Low
+- **Area**: decoration/remove_tool, building
+- **What**: Both Build and Decoration's Remove tools require one click per piece. Cleaning up a misplaced row of furniture or a section of wall is tedious. Should be hold-and-drag like the floor paint tool — anything the cursor sweeps over while LMB is held gets removed (with the whole sweep recorded as a single undo entry).
+- **Why**: Current Remove uses `cursor.world_click` (just_pressed). Switching to held-drag means tracking a per-frame set of removed entities and flushing them as one `BuildOp::Removed` when LMB is released, mirroring how `building::Floor` paint works.
+- **Fix when**: When the click-by-click pace becomes a clear UX friction point — likely after players start building larger rooms. Useful in both modes; share the implementation.
+- **Effort**: M
 - **Status**: Open
 
 ## DEBT-013: Phase 0 pending crate adoptions — superseded
