@@ -246,32 +246,59 @@ fn ghost_face_emissive(blocked: bool) -> LinearRgba {
 }
 
 /// Decide whether the ghost at `pos` would overlap an existing placed
-/// piece in a way that should block placement. Walls / doors / windows /
-/// roofs (anything STRUCTURAL except floors) block under two conditions:
+/// piece in a way that should block placement.
 ///
-/// 1. **Center proximity**: the ghost center sits inside the wall's
-///    bounding cube (within 0.45m XZ + 0.6m Y of the wall center).
-/// 2. **Stacked on top**: the cursor is pointing at a structural piece's
-///    top face. Even if the ghost center clears the wall AABB, sitting
-///    a chair on top of a wall is visually nonsense -- the ghost extends
-///    past the wall edges and floats over the room below. Catching this
-///    explicitly via the cursor hit avoids needing a full footprint
-///    support check.
+/// Test is an AABB intersection between the ghost (centred at `pos`,
+/// extents `dims/2`) and each placed structural piece (assumed 1x1x1
+/// cube centred at its transform). Y axis uses a 0.15m buffer so a
+/// ghost sitting flush *on top of* a wall reads as blocked -- the ghost
+/// AABB and wall AABB just touch at wall_top, no overlap, but the
+/// placement is still nonsense (chair perched on a 1m-thick wall).
 ///
-/// Floors and carpets don't block -- you place on top of those. Other
-/// furniture / decorations are allowed to overlap (carpet-under-table,
-/// candle-on-chest are common and intentional).
+/// Floors are excluded -- you place on top of those. Carpets and other
+/// non-structural placeables are allowed to overlap on purpose
+/// (carpet-under-table, candle-on-chest).
 fn is_decoration_blocked(
     pos: Vec3,
+    dims: Vec3,
     cursor_hit: Option<CursorHit>,
     placed_q: &Query<(&Transform, &PlacedItem), Without<DecorationPreview>>,
     registry: &ItemRegistry,
 ) -> bool {
     use crate::items::ItemTags;
 
-    // Stacked-on-structural check.
+    let ghost_half = dims * 0.5;
+    let wall_half = Vec3::splat(0.5); // structural pieces are 1x1x1 cubes
+    // Small XZ inset stops walls *next to* the ghost (touching face-on
+    // but not under it) from triggering. Y buffer adds tolerance so a
+    // ghost sitting on a wall registers as blocked.
+    let xz_inset = 0.05;
+    let y_buffer = 0.15;
+
+    let aabb_overlap = placed_q.iter().any(|(tf, item)| {
+        let Some(def) = registry.get(item.item) else { return false };
+        if matches!(def.form, Form::Floor) {
+            return false;
+        }
+        if !def.tags.contains(ItemTags::STRUCTURAL) {
+            return false;
+        }
+        let dx = (tf.translation.x - pos.x).abs();
+        let dy = (tf.translation.y - pos.y).abs();
+        let dz = (tf.translation.z - pos.z).abs();
+        dx < ghost_half.x + wall_half.x - xz_inset
+            && dz < ghost_half.z + wall_half.z - xz_inset
+            && dy < ghost_half.y + wall_half.y + y_buffer
+    });
+    if aabb_overlap {
+        return true;
+    }
+
+    // Belt-and-braces: cursor pointing at any structural top face
+    // (wall / door / window) -- in case the geometry test misses an
+    // edge case.
     if let Some(hit) = cursor_hit {
-        if hit.normal.y > 0.7 {
+        if hit.normal.y > 0.5 {
             if let Ok((_, item)) = placed_q.get(hit.entity) {
                 if let Some(def) = registry.get(item.item) {
                     if def.tags.contains(ItemTags::STRUCTURAL)
@@ -284,20 +311,7 @@ fn is_decoration_blocked(
         }
     }
 
-    // Center-proximity check.
-    placed_q.iter().any(|(tf, item)| {
-        let Some(def) = registry.get(item.item) else { return false };
-        if matches!(def.form, Form::Floor) {
-            return false;
-        }
-        if !def.tags.contains(ItemTags::STRUCTURAL) {
-            return false;
-        }
-        let dx = (tf.translation.x - pos.x).abs();
-        let dy = (tf.translation.y - pos.y).abs();
-        let dz = (tf.translation.z - pos.z).abs();
-        dx < 0.45 && dz < 0.45 && dy < 0.6
-    })
+    false
 }
 
 pub fn update_preview(
@@ -340,7 +354,21 @@ pub fn update_preview(
         &noise,
         &catalog,
     );
-    let blocked = is_decoration_blocked(pos, cursor.cursor_hit, &placed_q, &registry);
+    // Hoist dims out of the spawn branch so we can pass it to the
+    // blocked check. Same logic as the original spawn path uses.
+    let dims = if matches!(def.form, Form::Interior) {
+        def.interior_name
+            .as_deref()
+            .and_then(|name| catalog.aabb_for(name))
+            .map(|aabb| {
+                let scale = def.form.placement_scale();
+                aabb.size() * scale
+            })
+            .unwrap_or(Vec3::splat(0.6))
+    } else {
+        Vec3::new(1.0, 0.8, 1.0)
+    };
+    let blocked = is_decoration_blocked(pos, dims, cursor.cursor_hit, &placed_q, &registry);
 
     // Reuse the existing ghost only when it represents the same item. If
     // the player picked a different piece in the catalog (`item_id`
@@ -372,27 +400,8 @@ pub fn update_preview(
     };
 
     if needs_respawn {
-        // Determine the ghost cuboid dimensions. For Form::Interior we
-        // size from the AABB so the ghost matches the asset footprint;
-        // for other forms the make_mesh() primitive is the right size
-        // already, but we still need explicit dimensions to position the
-        // forward indicator on the front face.
-        let dims = if matches!(def.form, Form::Interior) {
-            def.interior_name
-                .as_deref()
-                .and_then(|name| catalog.aabb_for(name))
-                .map(|aabb| {
-                    let scale = def.form.placement_scale();
-                    aabb.size() * scale
-                })
-                .unwrap_or(Vec3::splat(0.6))
-        } else {
-            // Approximate the form's bounding box. For most cuboid-shaped
-            // forms (Bed, Chair, Table, etc.) this is a reasonable proxy;
-            // indicator sizing only needs to be in the right ballpark.
-            Vec3::new(1.0, 0.8, 1.0)
-        };
-
+        // dims was computed above so we could pass it to the blocked
+        // check; reuse the same value here for mesh sizing.
         let body_mesh = if matches!(def.form, Form::Interior) {
             meshes.add(Mesh::from(Cuboid::new(dims.x, dims.y, dims.z)))
         } else {
