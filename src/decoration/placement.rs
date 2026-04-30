@@ -4,13 +4,15 @@ use bevy::prelude::*;
 
 /// Marker for the decoration ghost preview entity. One at a time.
 /// Carries the `ItemId` of the piece the ghost is currently representing
-/// so `update_preview` can detect a selection change and respawn with
-/// the right mesh -- without this the ghost gets stuck on the FIRST
-/// item ever selected even after the player clicks a different
-/// catalog thumbnail.
+/// (so `update_preview` can detect a selection change and respawn with
+/// the right mesh) and the material handles for the body + forward face
+/// (so the system can recolor in-place each frame when placement
+/// validity flips between OK / blocked).
 #[derive(Component)]
 pub struct DecorationPreview {
     pub item: crate::items::ItemId,
+    pub body_mat: Handle<StandardMaterial>,
+    pub face_mat: Handle<StandardMaterial>,
 }
 
 /// Granularity of v1 magnetic snap. 0.1m is fine enough that the grid
@@ -217,6 +219,59 @@ use crate::world::biome::WorldNoise;
 use crate::world::terrain::Terrain;
 use super::{DecorationMode, DecorationTool};
 
+/// Body / face colors for the OK and BLOCKED ghost states. Centralised
+/// so toggling between them in `update_preview` is a single lookup.
+fn ghost_body_color(blocked: bool) -> Color {
+    if blocked {
+        Color::srgba(0.95, 0.30, 0.30, 0.45)
+    } else {
+        Color::srgba(0.40, 0.90, 0.60, 0.40)
+    }
+}
+
+fn ghost_face_color(blocked: bool) -> Color {
+    if blocked {
+        Color::srgba(1.0, 0.20, 0.15, 0.65)
+    } else {
+        Color::srgba(0.55, 1.00, 0.00, 0.55)
+    }
+}
+
+fn ghost_face_emissive(blocked: bool) -> LinearRgba {
+    if blocked {
+        LinearRgba::from(Color::srgb(2.0, 0.35, 0.20))
+    } else {
+        LinearRgba::from(Color::srgb(0.9, 2.0, 0.2))
+    }
+}
+
+/// Decide whether the ghost at `pos` would overlap an existing placed
+/// piece in a way that should block placement. Walls / doors / windows /
+/// roofs (anything STRUCTURAL except floors) block. Floors and carpets
+/// don't block -- you place on top of those. Anything else (furniture,
+/// other decorations) is allowed to overlap for now; carpets-under-table
+/// and lamp-on-table are common and intentional.
+fn is_decoration_blocked(
+    pos: Vec3,
+    placed_q: &Query<(&Transform, &PlacedItem), Without<DecorationPreview>>,
+    registry: &ItemRegistry,
+) -> bool {
+    use crate::items::ItemTags;
+    placed_q.iter().any(|(tf, item)| {
+        let Some(def) = registry.get(item.item) else { return false };
+        if matches!(def.form, Form::Floor) {
+            return false;
+        }
+        if !def.tags.contains(ItemTags::STRUCTURAL) {
+            return false;
+        }
+        let dx = (tf.translation.x - pos.x).abs();
+        let dy = (tf.translation.y - pos.y).abs();
+        let dz = (tf.translation.z - pos.z).abs();
+        dx < 0.45 && dz < 0.45 && dy < 0.6
+    })
+}
+
 pub fn update_preview(
     mut commands: Commands,
     decoration_mode: Option<ResMut<DecorationMode>>,
@@ -257,6 +312,7 @@ pub fn update_preview(
         &noise,
         &catalog,
     );
+    let blocked = is_decoration_blocked(pos, &placed_q, &registry);
 
     // Reuse the existing ghost only when it represents the same item. If
     // the player picked a different piece in the catalog (`item_id`
@@ -271,6 +327,16 @@ pub fn update_preview(
             } else {
                 tf.translation = pos;
                 tf.rotation = Quat::from_rotation_y(mode.rotation_radians);
+                // Update body / face colors in-place each frame so the
+                // ghost flips between OK and blocked tints as the cursor
+                // crosses obstacles.
+                if let Some(body) = materials.get_mut(&prev.body_mat) {
+                    body.base_color = ghost_body_color(blocked);
+                }
+                if let Some(face) = materials.get_mut(&prev.face_mat) {
+                    face.base_color = ghost_face_color(blocked);
+                    face.emissive = ghost_face_emissive(blocked);
+                }
                 false
             }
         }
@@ -282,7 +348,7 @@ pub fn update_preview(
         // size from the AABB so the ghost matches the asset footprint;
         // for other forms the make_mesh() primitive is the right size
         // already, but we still need explicit dimensions to position the
-        // forward arrow on top.
+        // forward indicator on the front face.
         let dims = if matches!(def.form, Form::Interior) {
             def.interior_name
                 .as_deref()
@@ -295,7 +361,7 @@ pub fn update_preview(
         } else {
             // Approximate the form's bounding box. For most cuboid-shaped
             // forms (Bed, Chair, Table, etc.) this is a reasonable proxy;
-            // arrow sizing only needs to be in the right ballpark.
+            // indicator sizing only needs to be in the right ballpark.
             Vec3::new(1.0, 0.8, 1.0)
         };
 
@@ -305,27 +371,26 @@ pub fn update_preview(
             meshes.add(def.form.make_mesh())
         };
         let body_mat = materials.add(StandardMaterial {
-            base_color: Color::srgba(0.4, 0.9, 0.6, 0.4),
+            base_color: ghost_body_color(blocked),
             alpha_mode: AlphaMode::Blend,
             ..default()
         });
 
-        // Forward indicator: a bright slab pressed against the piece's
-        // +Z face (its local forward). Reads at a glance like a colored
-        // front door, so the player sees orientation from any camera
-        // angle without having to look down at an arrow on top. Slab is
-        // 95% of the face so a thin border of green ghost shows around
-        // it -- looks intentional rather than smushed.
+        // Forward indicator: a translucent lime slab pressed against the
+        // piece's +Z face (its local forward). Reads at a glance like a
+        // colored front door so the player sees orientation from any
+        // camera angle. Translucent + emissive so it blends with the
+        // body but stays visible against shaded interiors. Flips to red
+        // when the position is blocked.
         let face_mesh = meshes.add(Mesh::from(Cuboid::new(
             dims.x * 0.95,
             dims.y * 0.95,
             0.02,
         )));
         let face_mat = materials.add(StandardMaterial {
-            // Vivid lime green, deliberately oversaturated + emissive so
-            // the indicator pops against the muted translucent body.
-            base_color: Color::srgb(0.55, 1.0, 0.0),
-            emissive: LinearRgba::from(Color::srgb(0.9, 2.0, 0.2)),
+            base_color: ghost_face_color(blocked),
+            emissive: ghost_face_emissive(blocked),
+            alpha_mode: AlphaMode::Blend,
             unlit: true,
             ..default()
         });
@@ -334,7 +399,11 @@ pub fn update_preview(
 
         commands
             .spawn((
-                DecorationPreview { item: item_id },
+                DecorationPreview {
+                    item: item_id,
+                    body_mat: body_mat.clone(),
+                    face_mat: face_mat.clone(),
+                },
                 Mesh3d(body_mesh),
                 MeshMaterial3d(body_mat),
                 Transform::from_translation(pos)
