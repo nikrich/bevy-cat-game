@@ -10,7 +10,7 @@ use crate::items::{InteriorCatalog, ItemRegistry};
 use crate::world::biome::WorldNoise;
 use crate::world::terrain::Terrain;
 
-use super::placement::{compute_decoration_placement, DecorationPreview};
+use super::placement::{compute_decoration_placement, is_decoration_blocked, DecorationPreview};
 use super::{DecorationMode, DecorationTool};
 
 /// Mirrors `building::INFINITE_RESOURCES`: dev cheat that bypasses
@@ -60,6 +60,11 @@ pub fn place_decoration(
         &noise,
         &catalog,
     );
+    // Refuse to spawn when the ghost is showing red. Avoids placements
+    // that clip into walls or perch furniture on top of structural pieces.
+    if is_decoration_blocked(pos, cursor.cursor_hit, &placed_q, &registry) {
+        return;
+    }
     let tf = Transform::from_translation(pos)
         .with_rotation(Quat::from_rotation_y(mode.rotation_radians));
 

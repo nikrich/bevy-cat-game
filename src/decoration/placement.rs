@@ -246,57 +246,27 @@ fn ghost_face_emissive(blocked: bool) -> LinearRgba {
 }
 
 /// Decide whether the ghost at `pos` would overlap an existing placed
-/// piece in a way that should block placement.
+/// piece in a way that should block placement. Two narrow conditions,
+/// kept tight on purpose -- the previous AABB-with-buffer approach
+/// false-positive-blocked beds inside small rooms because the bed AABB
+/// extended toward distant walls.
 ///
-/// Test is an AABB intersection between the ghost (centred at `pos`,
-/// extents `dims/2`) and each placed structural piece (assumed 1x1x1
-/// cube centred at its transform). Y axis uses a 0.15m buffer so a
-/// ghost sitting flush *on top of* a wall reads as blocked -- the ghost
-/// AABB and wall AABB just touch at wall_top, no overlap, but the
-/// placement is still nonsense (chair perched on a 1m-thick wall).
+/// 1. **Cursor on structural top face**: hovering on a wall / door /
+///    window's top means the player is trying to stack furniture on a
+///    1m-thick wall. Block.
+/// 2. **Ghost centre inside a wall**: the centre of the ghost sits
+///    inside a 1x1x1 structural cube. Block.
 ///
-/// Floors are excluded -- you place on top of those. Carpets and other
-/// non-structural placeables are allowed to overlap on purpose
-/// (carpet-under-table, candle-on-chest).
-fn is_decoration_blocked(
+/// Floors / carpets / other furniture are allowed under or beside the
+/// ghost on purpose (carpet-under-table, lamp-on-chest, bed-against-wall).
+pub fn is_decoration_blocked<F: bevy::ecs::query::QueryFilter>(
     pos: Vec3,
-    dims: Vec3,
     cursor_hit: Option<CursorHit>,
-    placed_q: &Query<(&Transform, &PlacedItem), Without<DecorationPreview>>,
+    placed_q: &Query<(&Transform, &PlacedItem), F>,
     registry: &ItemRegistry,
 ) -> bool {
     use crate::items::ItemTags;
 
-    let ghost_half = dims * 0.5;
-    let wall_half = Vec3::splat(0.5); // structural pieces are 1x1x1 cubes
-    // Small XZ inset stops walls *next to* the ghost (touching face-on
-    // but not under it) from triggering. Y buffer adds tolerance so a
-    // ghost sitting on a wall registers as blocked.
-    let xz_inset = 0.05;
-    let y_buffer = 0.15;
-
-    let aabb_overlap = placed_q.iter().any(|(tf, item)| {
-        let Some(def) = registry.get(item.item) else { return false };
-        if matches!(def.form, Form::Floor) {
-            return false;
-        }
-        if !def.tags.contains(ItemTags::STRUCTURAL) {
-            return false;
-        }
-        let dx = (tf.translation.x - pos.x).abs();
-        let dy = (tf.translation.y - pos.y).abs();
-        let dz = (tf.translation.z - pos.z).abs();
-        dx < ghost_half.x + wall_half.x - xz_inset
-            && dz < ghost_half.z + wall_half.z - xz_inset
-            && dy < ghost_half.y + wall_half.y + y_buffer
-    });
-    if aabb_overlap {
-        return true;
-    }
-
-    // Belt-and-braces: cursor pointing at any structural top face
-    // (wall / door / window) -- in case the geometry test misses an
-    // edge case.
     if let Some(hit) = cursor_hit {
         if hit.normal.y > 0.5 {
             if let Ok((_, item)) = placed_q.get(hit.entity) {
@@ -311,7 +281,20 @@ fn is_decoration_blocked(
         }
     }
 
-    false
+    placed_q.iter().any(|(tf, item)| {
+        let Some(def) = registry.get(item.item) else { return false };
+        if matches!(def.form, Form::Floor) {
+            return false;
+        }
+        if !def.tags.contains(ItemTags::STRUCTURAL) {
+            return false;
+        }
+        let dx = (tf.translation.x - pos.x).abs();
+        let dy = (tf.translation.y - pos.y).abs();
+        let dz = (tf.translation.z - pos.z).abs();
+        // Ghost centre inside the wall's 1x1x1 cube.
+        dx < 0.5 && dz < 0.5 && dy < 0.5
+    })
 }
 
 pub fn update_preview(
@@ -354,8 +337,11 @@ pub fn update_preview(
         &noise,
         &catalog,
     );
-    // Hoist dims out of the spawn branch so we can pass it to the
-    // blocked check. Same logic as the original spawn path uses.
+    let blocked = is_decoration_blocked(pos, cursor.cursor_hit, &placed_q, &registry);
+
+    // Ghost cuboid dimensions, used by the spawn branch for mesh sizing
+    // and forward-indicator placement. For Form::Interior we size from
+    // the AABB so the ghost matches the asset footprint.
     let dims = if matches!(def.form, Form::Interior) {
         def.interior_name
             .as_deref()
@@ -368,7 +354,6 @@ pub fn update_preview(
     } else {
         Vec3::new(1.0, 0.8, 1.0)
     };
-    let blocked = is_decoration_blocked(pos, dims, cursor.cursor_hit, &placed_q, &registry);
 
     // Reuse the existing ghost only when it represents the same item. If
     // the player picked a different piece in the catalog (`item_id`
