@@ -32,11 +32,7 @@ impl Plugin for GameUiPlugin {
                 Update,
                 (
                     update_gather_prompt,
-                    update_inventory_display,
                     update_build_prompt,
-                    update_build_hotbar,
-                    handle_build_hotbar_clicks,
-                    handle_inventory_placeable_clicks,
                     scroll_hovered_panels,
                 )
                     .run_if(in_state(GameState::Playing)),
@@ -55,18 +51,6 @@ struct GatherPrompt;
 #[derive(Component)]
 struct BuildPrompt;
 
-#[derive(Component)]
-struct InventoryBar;
-
-#[derive(Component)]
-struct InventorySlot {
-    item: ItemId,
-}
-
-#[derive(Component)]
-struct InventoryCount {
-    item: ItemId,
-}
 
 #[derive(Component)]
 struct CraftingMenu;
@@ -106,20 +90,8 @@ struct CraftingIngredientChip {
     ingredient: usize,
 }
 
-#[derive(Component)]
-struct BuildHotbar;
-
-#[derive(Component)]
-struct BuildHotbarSlot {
-    index: usize,
-}
-
-#[derive(Component)]
-struct BuildHotbarCount {
-    index: usize,
-}
-
-// Row state tints layered on top of the parchment panel.
+// Row state tints layered on top of the parchment panel — used by the
+// inventory hotbar's selected/hovered slot states.
 const ROW_BG_IDLE: Color = Color::srgba(0.0, 0.0, 0.0, 0.0);
 const ROW_BG_HOVER: Color = Color::srgba(0.30, 0.18, 0.08, 0.12);
 const ROW_BG_SELECTED_OK: Color = Color::srgba(0.86, 0.66, 0.30, 0.40);
@@ -165,13 +137,13 @@ fn spawn_ui(
             parent.spawn(body_text(&assets, "", 16.0, TEXT_GOLD_DIM));
         });
 
-    spawn_inventory_bar(&mut commands, &assets, &asset_server, &registry);
-    // The crafting menu lives in egui now (W0.6). `spawn_crafting_menu` is
-    // retained below so it can be revived if a Bevy UI fallback is ever
-    // needed, but it's no longer called.
+    // The bottom inventory hotbar (Bevy UI panel showing every stackable
+    // item with counts) was removed — the user is reworking it. The
+    // crafting menu lives in egui (W0.6); `spawn_crafting_menu` is kept as
+    // a fallback but not called. The build-mode tool palette also lives in
+    // egui (`building::ui`).
+    let _ = (&assets, &asset_server, &registry, &recipes, &placeables);
     let _ = spawn_crafting_menu;
-    let _ = (&recipes,);
-    spawn_build_hotbar(&mut commands, &assets, &asset_server, &registry, &placeables);
 }
 
 /// Helper: spawn an item swatch in a slot. If the item has a Kenney photo,
@@ -227,59 +199,6 @@ fn spawn_item_swatch(
         });
 }
 
-fn spawn_inventory_bar(
-    commands: &mut Commands,
-    assets: &UiAssets,
-    asset_server: &AssetServer,
-    registry: &ItemRegistry,
-) {
-    let stackables: Vec<&crate::items::ItemDef> = registry
-        .iter_with_tag(ItemTags::STACKABLE)
-        .collect();
-
-    commands
-        .spawn((
-            InventoryBar,
-            Node {
-                position_type: PositionType::Absolute,
-                bottom: Val::Px(16.0),
-                width: Val::Percent(100.0),
-                justify_content: JustifyContent::Center,
-                align_items: AlignItems::End,
-                column_gap: Val::Px(4.0),
-                flex_wrap: FlexWrap::Wrap,
-                ..default()
-            },
-        ))
-        .with_children(|parent| {
-            for def in stackables {
-                parent
-                    .spawn((
-                        Button,
-                        InventorySlot { item: def.id },
-                        Node {
-                            width: Val::Px(56.0),
-                            height: Val::Px(68.0),
-                            flex_direction: FlexDirection::Column,
-                            justify_content: JustifyContent::Center,
-                            align_items: AlignItems::Center,
-                            padding: UiRect::all(Val::Px(6.0)),
-                            ..default()
-                        },
-                        slot_image(assets.panel_dark.clone()),
-                        Visibility::Hidden,
-                    ))
-                    .with_children(|slot| {
-                        spawn_item_swatch(slot, asset_server, def, 32.0);
-                        slot.spawn(body_text(assets, &def.display_name, 9.0, TEXT_BODY_DIM));
-                        slot.spawn((
-                            InventoryCount { item: def.id },
-                            body_text(assets, "0", 14.0, TEXT_GOLD),
-                        ));
-                    });
-            }
-        });
-}
 
 fn spawn_crafting_menu(
     commands: &mut Commands,
@@ -608,100 +527,6 @@ fn spawn_recipe_row(
         });
 }
 
-fn spawn_build_hotbar(
-    commands: &mut Commands,
-    assets: &UiAssets,
-    asset_server: &AssetServer,
-    registry: &ItemRegistry,
-    placeables: &PlaceableItems,
-) {
-    // Bottom horizontal hotbar with wrap. The inventory hotbar is hidden during
-    // build mode (see `update_inventory_display`), so this slot location is
-    // free of overlap. Wrap means 14+ placeables can reflow onto a second row
-    // without running off the screen.
-    commands
-        .spawn((
-            BuildHotbar,
-            Node {
-                position_type: PositionType::Absolute,
-                bottom: Val::Px(20.0),
-                width: Val::Percent(100.0),
-                justify_content: JustifyContent::Center,
-                align_items: AlignItems::End,
-                flex_direction: FlexDirection::Row,
-                flex_wrap: FlexWrap::WrapReverse,
-                column_gap: Val::Px(6.0),
-                row_gap: Val::Px(6.0),
-                padding: UiRect::axes(Val::Px(40.0), Val::Px(0.0)),
-                ..default()
-            },
-            Visibility::Hidden,
-        ))
-        .with_children(|bar| {
-            for (i, item_id) in placeables.0.iter().enumerate() {
-                let def = registry.get(*item_id);
-                let color = def.map(|d| d.material.base_color()).unwrap_or(Color::WHITE);
-                let name = def
-                    .map(|d| d.display_name.clone())
-                    .unwrap_or_else(|| "?".into());
-                bar.spawn((
-                    Button,
-                    BuildHotbarSlot { index: i },
-                    Node {
-                        width: Val::Px(74.0),
-                        height: Val::Px(80.0),
-                        flex_direction: FlexDirection::Column,
-                        justify_content: JustifyContent::Center,
-                        align_items: AlignItems::Center,
-                        padding: UiRect::all(Val::Px(6.0)),
-                        row_gap: Val::Px(2.0),
-                        ..default()
-                    },
-                    slot_image(assets.panel_dark.clone()),
-                    BorderColor::all(Color::srgba(0.0, 0.0, 0.0, 0.0)),
-                ))
-                .with_children(|slot| {
-                    // Shortcut number (top-left absolute, doesn't affect column layout)
-                    let label = if i < 9 { format!("{}", i + 1) } else { String::new() };
-                    slot.spawn((
-                        Node {
-                            position_type: PositionType::Absolute,
-                            top: Val::Px(2.0),
-                            left: Val::Px(5.0),
-                            ..default()
-                        },
-                        body_text(assets, &label, 9.0, TEXT_GOLD_DIM),
-                    ));
-                    // Item swatch (icon if available, else colour)
-                    if let Some(d) = def {
-                        spawn_item_swatch(slot, asset_server, d, 36.0);
-                    }
-                    // Item name (small text)
-                    slot.spawn((
-                        Text::new(name),
-                        TextFont {
-                            font: assets.body_font.clone(),
-                            font_size: 9.0,
-                            ..default()
-                        },
-                        TextColor(TEXT_GOLD),
-                    ));
-                    // Count (bottom-right absolute so it doesn't shift the swatch)
-                    slot.spawn((
-                        BuildHotbarCount { index: i },
-                        Node {
-                            position_type: PositionType::Absolute,
-                            bottom: Val::Px(2.0),
-                            right: Val::Px(6.0),
-                            ..default()
-                        },
-                        body_text(assets, "0", 12.0, TEXT_GOLD),
-                    ));
-                });
-            }
-        });
-}
-
 fn update_gather_prompt(
     nearby: Option<Res<NearbyGatherable>>,
     crafting: Res<CraftingState>,
@@ -777,45 +602,6 @@ fn update_build_prompt(
     }
 }
 
-fn update_inventory_display(
-    inventory: Res<Inventory>,
-    build_mode: Option<Res<BuildMode>>,
-    crafting: Res<CraftingState>,
-    mut inv_events: MessageReader<InventoryChanged>,
-    mut bar_vis: Query<&mut Visibility, (With<InventoryBar>, Without<InventorySlot>)>,
-    mut slots: Query<(&InventorySlot, &mut Visibility), Without<InventoryBar>>,
-    mut counts: Query<(&InventoryCount, &mut Text)>,
-) {
-    // Hide the whole inventory hotbar whenever a center panel (build mode or
-    // crafting) is open, so it doesn't peek out from below.
-    let hide_bar = build_mode.is_some() || crafting.open;
-    let bar_target = if hide_bar {
-        Visibility::Hidden
-    } else {
-        Visibility::Inherited
-    };
-    for mut vis in &mut bar_vis {
-        *vis = bar_target;
-    }
-
-    let inv_dirty = inv_events.read().next().is_some();
-    let mode_changed = build_mode.as_ref().is_some_and(|m| m.is_changed());
-    if !inv_dirty && !mode_changed {
-        return;
-    }
-
-    for (slot, mut vis) in &mut slots {
-        let count = inventory.count(slot.item);
-        *vis = if count > 0 { Visibility::Visible } else { Visibility::Hidden };
-    }
-
-    for (count_comp, mut text) in &mut counts {
-        let count = inventory.count(count_comp.item);
-        if count > 0 {
-            **text = count.to_string();
-        }
-    }
-}
 
 fn update_crafting_menu(
     crafting: Res<CraftingState>,
@@ -989,44 +775,6 @@ fn handle_crafting_tab_clicks(
     }
 }
 
-fn update_build_hotbar(
-    build_mode: Option<Res<BuildMode>>,
-    inventory: Res<Inventory>,
-    placeables: Res<PlaceableItems>,
-    mut hotbar_vis: Query<&mut Visibility, With<BuildHotbar>>,
-    mut slots: Query<(&BuildHotbarSlot, &Interaction, &mut ImageNode)>,
-    mut counts: Query<(&BuildHotbarCount, &mut Text, &mut TextColor)>,
-) {
-    let Ok(mut vis) = hotbar_vis.single_mut() else { return };
-    *vis = if build_mode.is_some() { Visibility::Visible } else { Visibility::Hidden };
-
-    let Some(mode) = build_mode else { return };
-
-    for (slot, interaction, mut img) in &mut slots {
-        let item = placeables.0.get(slot.index).copied();
-        let count = item.map(|id| inventory.count(id)).unwrap_or(0);
-        let has_any = count > 0;
-        let is_selected = slot.index == mode.selected;
-        let is_hovered = matches!(interaction, Interaction::Hovered | Interaction::Pressed);
-
-        img.color = if is_selected {
-            Color::srgb(1.20, 1.05, 0.70)
-        } else if is_hovered && has_any {
-            Color::srgb(1.10, 1.05, 0.95)
-        } else if has_any {
-            Color::WHITE
-        } else {
-            Color::srgba(0.55, 0.50, 0.45, 0.85)
-        };
-    }
-
-    for (count_comp, mut text, mut color) in &mut counts {
-        let item = placeables.0.get(count_comp.index).copied();
-        let count = item.map(|id| inventory.count(id)).unwrap_or(0);
-        **text = count.to_string();
-        *color = TextColor(if count > 0 { TEXT_BODY } else { TEXT_FAINT });
-    }
-}
 
 /// Mouse-wheel scroll for any node tagged `Scrollable` whose subtree contains
 /// a hovered/pressed UI element. Bevy 0.16 supports `Overflow::scroll_y()` and
@@ -1076,75 +824,4 @@ fn subtree_has_active_interaction(
     false
 }
 
-/// Click an inventory slot containing a placeable item to enter placing mode
-/// without pressing B. Non-placeable items are ignored. Acts as both
-/// "start placing" (when no BuildMode) and "switch selection" (when one
-/// already exists).
-fn handle_inventory_placeable_clicks(
-    mut commands: Commands,
-    mut build_mode: Option<ResMut<BuildMode>>,
-    placeables: Res<PlaceableItems>,
-    inventory: Res<Inventory>,
-    registry: Res<ItemRegistry>,
-    asset_server: Res<AssetServer>,
-    slots: Query<(&Interaction, &InventorySlot), Changed<Interaction>>,
-    mut meshes: ResMut<Assets<Mesh>>,
-    mut materials: ResMut<Assets<StandardMaterial>>,
-) {
-    for (interaction, slot) in &slots {
-        if !matches!(interaction, Interaction::Pressed) {
-            continue;
-        }
-        if !placeables.0.contains(&slot.item) || inventory.count(slot.item) == 0 {
-            continue;
-        }
-        crate::building::enter_placing_with(
-            &mut commands,
-            build_mode.as_deref_mut(),
-            &placeables,
-            &registry,
-            &asset_server,
-            &mut meshes,
-            &mut materials,
-            slot.item,
-        );
-        // Only one click per frame.
-        break;
-    }
-}
 
-fn handle_build_hotbar_clicks(
-    build_mode: Option<ResMut<BuildMode>>,
-    placeables: Res<PlaceableItems>,
-    inventory: Res<Inventory>,
-    registry: Res<ItemRegistry>,
-    asset_server: Res<AssetServer>,
-    slots: Query<(&Interaction, &BuildHotbarSlot), Changed<Interaction>>,
-    mut commands: Commands,
-    mut meshes: ResMut<Assets<Mesh>>,
-    mut materials: ResMut<Assets<StandardMaterial>>,
-) {
-    let Some(mut mode) = build_mode else { return };
-    for (interaction, slot) in &slots {
-        if !matches!(interaction, Interaction::Pressed) {
-            continue;
-        }
-        let Some(item) = placeables.0.get(slot.index).copied() else { continue };
-        if inventory.count(item) == 0 {
-            continue;
-        }
-        if mode.selected == slot.index {
-            continue;
-        }
-        mode.selected = slot.index;
-        crate::building::refresh_build_preview(
-            &mut commands,
-            &mut mode,
-            item,
-            &registry,
-            &asset_server,
-            &mut meshes,
-            &mut materials,
-        );
-    }
-}

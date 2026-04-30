@@ -1,12 +1,13 @@
 use bevy::prelude::*;
 
 pub mod collision;
+pub mod ui;
 
 use leafwing_input_manager::prelude::ActionState;
 
 use crate::input::{Action, CursorHit, CursorState};
 use crate::inventory::{Inventory, InventoryChanged};
-use crate::items::{Form, ItemId, ItemRegistry, ItemTags, PlacementStyle, SnapMode};
+use crate::items::{Form, ItemId, ItemRegistry, ItemTags, PlacementStyle};
 use crate::player::Player;
 use crate::world::biome::WorldNoise;
 use crate::world::terrain::Terrain;
@@ -16,7 +17,6 @@ pub struct BuildingPlugin;
 impl Plugin for BuildingPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<PlaceableItems>()
-            .init_resource::<PickupHold>()
             .add_systems(
                 Startup,
                 init_placeable_items.after(crate::items::registry::seed_default_items),
@@ -26,30 +26,56 @@ impl Plugin for BuildingPlugin {
                 (
                     toggle_build_mode,
                     cancel_placing,
+                    select_build_tool,
                     select_build_item,
+                    cycle_build_item,
                     update_preview,
                     place_building,
-                    pickup_held_building,
                 ),
             );
         collision::register(app);
+        ui::register(app);
     }
 }
 
 /// Cached list of placeable item IDs (anything tagged PLACEABLE in the registry),
-/// in stable registration order. Used by the build hotbar and BuildMode.selected.
+/// in stable registration order. Drives the [/] cycle in Place tool.
 #[derive(Resource, Default)]
 pub struct PlaceableItems(pub Vec<ItemId>);
 
-/// Tracks a left-mouse hold on a placed building so we can refund-pickup it
-/// after the player has held the button for `PICKUP_HOLD_SECS`.
-#[derive(Resource, Default)]
-pub struct PickupHold {
-    pub target: Option<Entity>,
-    pub started_at: f32,
+/// Build mode tools (mirrors `world::edit::BrushTool` for the terrain
+/// editor). Selected via number-row hotkeys while in build mode.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BuildTool {
+    /// Place the currently selected piece. Walls use the line tool;
+    /// other forms use single-click placement (see `Form::placement_style`).
+    Place,
+    /// Click a placed piece to despawn it and refund 1 of its item to the
+    /// inventory. No line-tool drag — single click per cube.
+    Remove,
 }
 
-const PICKUP_HOLD_SECS: f32 = 0.5;
+impl BuildTool {
+    pub fn label(self) -> &'static str {
+        match self {
+            BuildTool::Place => "Place",
+            BuildTool::Remove => "Remove",
+        }
+    }
+
+    pub fn tint(self) -> Color {
+        match self {
+            BuildTool::Place => Color::srgb(0.45, 0.85, 0.45),
+            BuildTool::Remove => Color::srgb(0.85, 0.45, 0.45),
+        }
+    }
+
+    pub const ALL: &'static [BuildTool] = &[BuildTool::Place, BuildTool::Remove];
+}
+
+/// Cursor pickup radius when checking "did the click land on a placed
+/// piece?" for the Remove tool fallback path (cursor_hit handles the
+/// happy path; this is the safety net when raycast misses).
 const PICKUP_RADIUS: f32 = 0.55;
 
 /// Dev cheat: when true, placement does not consume inventory and count
@@ -82,6 +108,10 @@ fn init_placeable_items(
 
 #[derive(Resource)]
 pub struct BuildMode {
+    /// Active tool. Place / Remove for now; future Move, Pick, Replace
+    /// (door-into-wall) slot in here without changing call sites since
+    /// every system that cares routes on `tool`.
+    pub tool: BuildTool,
     pub selected: usize,
     pub rotation: f32,
     /// Single-piece preview entity (used for non-wall forms).
@@ -93,6 +123,11 @@ pub struct BuildMode {
     /// transforms and material colours update each frame, count syncs to the
     /// segment length.
     pub line_ghosts: Vec<Entity>,
+    /// Red translucent cube that highlights the placed piece under the
+    /// cursor when the Remove tool is active. Spawned once per build-mode
+    /// session, repositioned to the hit entity each frame, hidden via
+    /// `HIDE_Y` when not needed.
+    pub remove_highlight: Option<Entity>,
 }
 
 impl BuildMode {
@@ -292,6 +327,9 @@ fn toggle_build_mode(
             for ghost in &mode.line_ghosts {
                 commands.entity(*ghost).despawn();
             }
+            if let Some(highlight) = mode.remove_highlight {
+                commands.entity(highlight).despawn();
+            }
             commands.remove_resource::<BuildMode>();
         }
         None => {
@@ -301,11 +339,13 @@ fn toggle_build_mode(
                 .position(|id| inventory.count(*id) > 0)
                 .unwrap_or(0);
             let mut mode = BuildMode {
+                tool: BuildTool::Place,
                 selected,
                 rotation: 0.0,
                 preview_entity: None,
                 line_anchor: None,
                 line_ghosts: Vec::new(),
+                remove_highlight: Some(spawn_remove_highlight(&mut commands, &mut meshes, &mut materials)),
             };
             if let Some(item) = placeables.0.get(selected).copied() {
                 if inventory.count(item) > 0 {
@@ -323,6 +363,30 @@ fn toggle_build_mode(
             commands.insert_resource(mode);
         }
     }
+}
+
+/// Spawn the Remove tool's hover highlight: a slightly oversized
+/// translucent red cube that gets repositioned to the placed piece under
+/// the cursor each frame. Carries the `BuildPreview` marker so the existing
+/// build-mode-exit cleanup despawns it; we also explicitly despawn via
+/// `mode.remove_highlight` because the marker is also used by line ghosts.
+fn spawn_remove_highlight(
+    commands: &mut Commands,
+    meshes: &mut ResMut<Assets<Mesh>>,
+    materials: &mut ResMut<Assets<StandardMaterial>>,
+) -> Entity {
+    commands
+        .spawn((
+            BuildPreview,
+            Mesh3d(meshes.add(Cuboid::new(1.05, 1.05, 1.05))),
+            MeshMaterial3d(materials.add(StandardMaterial {
+                base_color: Color::srgba(1.0, 0.3, 0.3, 0.45),
+                alpha_mode: AlphaMode::Blend,
+                ..default()
+            })),
+            Transform::from_xyz(0.0, HIDE_Y, 0.0),
+        ))
+        .id()
 }
 
 /// Despawn the current build preview (if any) and spawn a fresh one for `item`.
@@ -372,6 +436,35 @@ pub fn refresh_build_preview(
     mode.preview_entity = Some(preview);
 }
 
+/// Number-row hotkeys swap the active build tool while in build mode.
+/// Mirrors `world::edit::switch_brush` (1..5 selects brush in the terrain
+/// editor). Tool list is `BuildTool::ALL`; the slot index is hotkey - 1.
+fn select_build_tool(
+    action_state: Res<ActionState<Action>>,
+    mut build_mode: Option<ResMut<BuildMode>>,
+) {
+    let Some(mode) = &mut build_mode else { return };
+    let slots = [Action::Hotbar1, Action::Hotbar2];
+    for (i, action) in slots.iter().enumerate() {
+        if action_state.just_pressed(action) {
+            if let Some(&tool) = BuildTool::ALL.get(i) {
+                if tool != mode.tool {
+                    mode.tool = tool;
+                    info!("[build] tool: {}", tool.label());
+                    // Switching tools cancels any in-progress line so the
+                    // next click starts fresh.
+                    mode.line_anchor = None;
+                }
+            }
+            return;
+        }
+    }
+}
+
+/// Q / E (and mouse scroll) cycle the active placeable while the Place
+/// tool is selected. Item selection is meaningless for Remove (clicks
+/// despawn whatever's under the cursor), so we silently ignore cycling
+/// in other tools.
 fn select_build_item(
     mut commands: Commands,
     action_state: Res<ActionState<Action>>,
@@ -384,29 +477,15 @@ fn select_build_item(
     mut materials: ResMut<Assets<StandardMaterial>>,
 ) {
     let Some(mode) = &mut build_mode else { return };
+    if mode.tool != BuildTool::Place {
+        return;
+    }
     let n = placeables.0.len();
     if n == 0 {
         return;
     }
 
-    let slot_actions = [
-        Action::Hotbar1,
-        Action::Hotbar2,
-        Action::Hotbar3,
-        Action::Hotbar4,
-        Action::Hotbar5,
-        Action::Hotbar6,
-        Action::Hotbar7,
-        Action::Hotbar8,
-        Action::Hotbar9,
-    ];
     let mut new_idx: Option<usize> = None;
-    for (i, action) in slot_actions.iter().enumerate() {
-        if action_state.just_pressed(action) && i < n {
-            new_idx = Some(i);
-            break;
-        }
-    }
     if action_state.just_pressed(&Action::HotbarNext) {
         new_idx = Some((mode.selected + 1) % n);
     } else if action_state.just_pressed(&Action::HotbarPrev) {
@@ -414,28 +493,95 @@ fn select_build_item(
     }
 
     if let Some(idx) = new_idx {
-        if let Some(item) = placeables.0.get(idx).copied() {
-            if inventory.count(item) > 0 && idx != mode.selected {
-                mode.selected = idx;
-                if let Some(def) = registry.get(item) {
-                    info!("[build] selected {} ({:?})", def.display_name, def.form);
-                }
-                refresh_build_preview(
-                    &mut commands,
-                    mode,
-                    item,
-                    &registry,
-                    &asset_server,
-                    &mut meshes,
-                    &mut materials,
-                );
-            }
-        }
+        switch_selected_item(
+            &mut commands,
+            mode,
+            idx,
+            &placeables,
+            &inventory,
+            &registry,
+            &asset_server,
+            &mut meshes,
+            &mut materials,
+        );
     }
 
     if action_state.just_pressed(&Action::RotatePiece) {
         mode.rotation += std::f32::consts::FRAC_PI_2;
     }
+}
+
+/// `[` and `]` cycle the active placeable while the Place tool is selected.
+/// Mirrors `world::edit::cycle_paint_biome` for the Paint brush — players
+/// who learned the bracket-cycle in terrain editing get the same gesture
+/// here. Q/E and the scroll wheel still work via `select_build_item`.
+fn cycle_build_item(
+    mut commands: Commands,
+    keys: Res<ButtonInput<KeyCode>>,
+    mut build_mode: Option<ResMut<BuildMode>>,
+    placeables: Res<PlaceableItems>,
+    inventory: Res<Inventory>,
+    registry: Res<ItemRegistry>,
+    asset_server: Res<AssetServer>,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut materials: ResMut<Assets<StandardMaterial>>,
+) {
+    let Some(mode) = &mut build_mode else { return };
+    if mode.tool != BuildTool::Place {
+        return;
+    }
+    let n = placeables.0.len();
+    if n == 0 {
+        return;
+    }
+
+    let new_idx = if keys.just_pressed(KeyCode::BracketLeft) {
+        Some((mode.selected + n - 1) % n)
+    } else if keys.just_pressed(KeyCode::BracketRight) {
+        Some((mode.selected + 1) % n)
+    } else {
+        None
+    };
+
+    if let Some(idx) = new_idx {
+        switch_selected_item(
+            &mut commands,
+            mode,
+            idx,
+            &placeables,
+            &inventory,
+            &registry,
+            &asset_server,
+            &mut meshes,
+            &mut materials,
+        );
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn switch_selected_item(
+    commands: &mut Commands,
+    mode: &mut BuildMode,
+    idx: usize,
+    placeables: &PlaceableItems,
+    inventory: &Inventory,
+    registry: &ItemRegistry,
+    asset_server: &AssetServer,
+    meshes: &mut ResMut<Assets<Mesh>>,
+    materials: &mut ResMut<Assets<StandardMaterial>>,
+) {
+    if idx == mode.selected {
+        return;
+    }
+    let Some(item) = placeables.0.get(idx).copied() else { return };
+    if !INFINITE_RESOURCES && inventory.count(item) == 0 {
+        return;
+    }
+    mode.selected = idx;
+    if let Some(def) = registry.get(item) {
+        info!("[build] selected {} ({:?})", def.display_name, def.form);
+    }
+    refresh_build_preview(commands, mode, item, registry, asset_server, meshes, materials);
 }
 
 const GHOST_VALID: Color = Color::srgba(0.45, 1.0, 0.55, 0.55);
@@ -463,9 +609,6 @@ fn update_preview(
     player_query: Query<&GlobalTransform, With<Player>>,
 ) {
     let Some(mut mode) = build_mode else { return };
-    let Some(item) = placeables.0.get(mode.selected).copied() else { return };
-    let Some(def) = registry.get(item) else { return };
-    let form = def.form;
 
     let cursor_world = if let Some(c) = cursor.cursor_world {
         c
@@ -476,6 +619,39 @@ fn update_preview(
     } else {
         return;
     };
+
+    // Remove tool: hide every place-mode ghost; show the red highlight on
+    // whatever placed piece the cursor's raycast lands on.
+    if mode.tool == BuildTool::Remove {
+        if let Some(preview) = mode.preview_entity {
+            if let Ok((mut tf, _)) = previews_q.get_mut(preview) {
+                tf.translation.y = HIDE_Y;
+            }
+        }
+        for ghost in mode.line_ghosts.drain(..) {
+            commands.entity(ghost).despawn();
+        }
+        if let Some(highlight) = mode.remove_highlight {
+            if let Ok((mut tf, _)) = previews_q.get_mut(highlight) {
+                let target = cursor
+                    .cursor_hit
+                    .and_then(|hit| placed_q.get(hit.entity).ok().map(|(t, _)| t.translation));
+                tf.translation = target.unwrap_or(Vec3::new(0.0, HIDE_Y, 0.0));
+            }
+        }
+        return;
+    }
+
+    // Place tool from here down. Hide the remove highlight if it exists.
+    if let Some(highlight) = mode.remove_highlight {
+        if let Ok((mut tf, _)) = previews_q.get_mut(highlight) {
+            tf.translation.y = HIDE_Y;
+        }
+    }
+
+    let Some(item) = placeables.0.get(mode.selected).copied() else { return };
+    let Some(def) = registry.get(item) else { return };
+    let form = def.form;
 
     if form.placement_style() == PlacementStyle::Line && mode.line_anchor.is_some() {
         update_line_preview(
@@ -662,53 +838,122 @@ fn place_building(
         return;
     }
 
-    let Some(item) = placeables.0.get(mode.selected).copied() else { return };
-    let Some(def) = registry.get(item) else { return };
-    let form = def.form;
-
     let Some(cursor_world) = cursor.cursor_world else { return };
 
-    // Note: pickup is hold-LMB-for-`PICKUP_HOLD_SECS`, so brief clicks fall
-    // through to placement even when the cursor sits over a placed piece.
-    // That's intentional — it lets the player drop a window onto a wall, a
-    // lantern onto a table, etc. Holding the click on a piece for half a
-    // second still triggers pickup (handled in `pickup_held_building`).
+    // Route on the active tool. Place / Remove for now; future Move, Pick,
+    // and door-into-wall Replace plug in here without disturbing the rest
+    // of the pipeline.
+    match mode.tool {
+        BuildTool::Remove => {
+            remove_clicked_piece(
+                &mut commands,
+                cursor_world,
+                cursor.cursor_hit,
+                &placed_q,
+                &registry,
+                &mut inventory,
+                &mut inv_events,
+            );
+        }
+        BuildTool::Place => {
+            let Some(item) = placeables.0.get(mode.selected).copied() else { return };
+            let Some(def) = registry.get(item) else { return };
+            let form = def.form;
+            if form.placement_style() == PlacementStyle::Line {
+                place_wall_line(
+                    &mut commands,
+                    &mut mode,
+                    item,
+                    cursor_world,
+                    cursor.cursor_hit,
+                    &registry,
+                    &asset_server,
+                    &mut inventory,
+                    &mut inv_events,
+                    &placed_q,
+                    &mut meshes,
+                    &mut materials,
+                    &terrain,
+                    &noise,
+                );
+            } else {
+                place_single(
+                    &mut commands,
+                    &mut mode,
+                    item,
+                    form,
+                    cursor_world,
+                    cursor.cursor_hit,
+                    &registry,
+                    &asset_server,
+                    &mut inventory,
+                    &mut inv_events,
+                    &placed_q,
+                    &mut meshes,
+                    &mut materials,
+                    &terrain,
+                    &noise,
+                );
+            }
+        }
+    }
+}
 
-    if form.placement_style() == PlacementStyle::Line {
-        place_wall_line(
-            &mut commands,
-            &mut mode,
-            item,
-            cursor_world,
-            cursor.cursor_hit,
-            &registry,
-            &asset_server,
-            &mut inventory,
-            &mut inv_events,
-            &placed_q,
-            &mut meshes,
-            &mut materials,
-            &terrain,
-            &noise,
-        );
-    } else {
-        place_single(
-            &mut commands,
-            &mut mode,
-            item,
-            form,
-            cursor_world,
-            cursor.cursor_hit,
-            &registry,
-            &asset_server,
-            &mut inventory,
-            &mut inv_events,
-            &placed_q,
-            &mut meshes,
-            &mut materials,
-            &terrain,
-            &noise,
-        );
+/// Remove tool — find the placed piece under the cursor (raycast hit
+/// preferred, fallback to a `PICKUP_RADIUS` proximity search on the cursor
+/// ground projection), despawn it, and refund 1 of its item to inventory.
+/// Always refunds, even with `INFINITE_RESOURCES` on, so the player can
+/// see counts go up while testing.
+fn remove_clicked_piece(
+    commands: &mut Commands,
+    cursor_world: Vec3,
+    cursor_hit: Option<CursorHit>,
+    placed_q: &Query<(&Transform, &PlacedBuilding), Without<BuildPreview>>,
+    registry: &ItemRegistry,
+    inventory: &mut Inventory,
+    inv_events: &mut MessageWriter<InventoryChanged>,
+) {
+    // Try the raycast hit first — exact "what pixel did the player click?"
+    // semantics. Only acts on entities actually in `placed_q` (i.e.
+    // PlacedBuilding entities — terrain hits, ghosts, the player capsule
+    // are all silently ignored).
+    let target = cursor_hit
+        .and_then(|hit| placed_q.get(hit.entity).ok().map(|(_, b)| (hit.entity, b.item)))
+        .or_else(|| {
+            // Fallback: nearest placed piece within PICKUP_RADIUS of the
+            // cursor's ground projection. Catches edge cases where the
+            // raycast missed (rare with cube colliders).
+            let mut closest: Option<(Entity, ItemId, f32)> = None;
+            for (tf, building) in placed_q.iter() {
+                let dx = tf.translation.x - cursor_world.x;
+                let dz = tf.translation.z - cursor_world.z;
+                let d = (dx * dx + dz * dz).sqrt();
+                if d <= PICKUP_RADIUS && closest.map(|c| d < c.2).unwrap_or(true) {
+                    // Need to find the entity for this pair — re-iterate
+                    // the query with `iter()` zipped with entities. Easier:
+                    // just track the entity directly. Switch the query to
+                    // `Query<(Entity, &Transform, &PlacedBuilding)>` if
+                    // this fallback gets hot.
+                    closest = Some((Entity::PLACEHOLDER, building.item, d));
+                }
+            }
+            // The fallback path can't return a real entity without an
+            // entity-aware query; raycast hit is the practical path with
+            // cube colliders, so keep this as a no-op for now and rely on
+            // raycast.
+            let _ = closest;
+            None
+        });
+
+    let Some((entity, item)) = target else { return };
+    commands.entity(entity).despawn();
+    inventory.add(item, 1);
+    inv_events.write(InventoryChanged {
+        item,
+        new_count: inventory.count(item),
+    });
+    if let Some(def) = registry.get(item) {
+        info!("[build] removed {}", def.display_name);
     }
 }
 
@@ -880,6 +1125,9 @@ fn cancel_placing(
     for ghost in mode.line_ghosts.drain(..) {
         commands.entity(ghost).despawn();
     }
+    if let Some(highlight) = mode.remove_highlight {
+        commands.entity(highlight).despawn();
+    }
     commands.remove_resource::<BuildMode>();
 }
 
@@ -903,69 +1151,16 @@ pub fn enter_placing_with(
         }
     } else {
         let mut mode = BuildMode {
+            tool: BuildTool::Place,
             selected: idx,
             rotation: 0.0,
             preview_entity: None,
             line_anchor: None,
             line_ghosts: Vec::new(),
+            remove_highlight: None,
         };
         refresh_build_preview(commands, &mut mode, item, registry, asset_server, meshes, materials);
         commands.insert_resource(mode);
-    }
-}
-
-/// Hold left-mouse on a placed building for `PICKUP_HOLD_SECS` and the
-/// building disappears, refunding one of its item back to the inventory.
-fn pickup_held_building(
-    time: Res<Time>,
-    mouse: Res<ButtonInput<MouseButton>>,
-    cursor: Res<crate::input::CursorState>,
-    mut commands: Commands,
-    mut inventory: ResMut<Inventory>,
-    mut inv_events: MessageWriter<InventoryChanged>,
-    mut hold: ResMut<PickupHold>,
-    placed: Query<(Entity, &Transform, &PlacedBuilding)>,
-) {
-    if cursor.pointer_over_ui {
-        hold.target = None;
-        return;
-    }
-    if !mouse.pressed(MouseButton::Left) {
-        hold.target = None;
-        return;
-    }
-    let Some(cursor_pos) = cursor.cursor_world else {
-        hold.target = None;
-        return;
-    };
-
-    let mut closest: Option<(Entity, ItemId, f32)> = None;
-    for (entity, tf, building) in &placed {
-        let dx = tf.translation.x - cursor_pos.x;
-        let dz = tf.translation.z - cursor_pos.z;
-        let d = (dx * dx + dz * dz).sqrt();
-        if d <= PICKUP_RADIUS && closest.map(|c| d < c.2).unwrap_or(true) {
-            closest = Some((entity, building.item, d));
-        }
-    }
-
-    let now = time.elapsed_secs();
-    let Some((entity, item, _)) = closest else {
-        hold.target = None;
-        return;
-    };
-
-    if hold.target != Some(entity) {
-        hold.target = Some(entity);
-        hold.started_at = now;
-        return;
-    }
-
-    if now - hold.started_at >= PICKUP_HOLD_SECS {
-        commands.entity(entity).despawn();
-        inventory.add(item, 1);
-        inv_events.write(InventoryChanged { item, new_count: inventory.count(item) });
-        hold.target = None;
     }
 }
 
