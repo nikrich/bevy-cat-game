@@ -1,6 +1,7 @@
 use bevy::ecs::system::SystemParam;
 use bevy::prelude::*;
 
+pub mod catalog_ui;
 pub mod collision;
 pub mod interior;
 pub mod placement;
