@@ -2,6 +2,7 @@ mod animals;
 mod building;
 mod camera;
 mod crafting;
+mod decoration;
 mod edit;
 mod gathering;
 mod input;
@@ -61,5 +62,6 @@ fn main() {
         ))
         // Separated from the tuple above: Bevy's add_plugins tuple cap is 15.
         .add_plugins(ui::GameUiPlugin)
+        .add_plugins(decoration::DecorationPlugin)
         .run();
 }

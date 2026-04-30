@@ -56,6 +56,7 @@ pub enum Action {
     Place,
     RotatePiece,
     ToggleBuild,
+    ToggleDecoration,
     ToggleEditTerrain,
     ToggleInventory,
     ToggleCraft,
@@ -121,6 +122,9 @@ impl Action {
 
         map.insert(Self::ToggleBuild, KeyCode::KeyB);
         map.insert(Self::ToggleBuild, GamepadButton::North);
+
+        map.insert(Self::ToggleDecoration, KeyCode::KeyN);
+        map.insert(Self::ToggleDecoration, GamepadButton::RightTrigger2);
 
         map.insert(Self::ToggleEditTerrain, KeyCode::KeyT);
 

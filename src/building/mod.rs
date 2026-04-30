@@ -231,6 +231,8 @@ fn toggle_build_mode(
                     &catalog,
                 );
             }
+            // Mutual exclusion: entering build mode exits decoration mode.
+            commands.remove_resource::<crate::decoration::DecorationMode>();
             commands.insert_resource(mode);
         }
     }

@@ -1,0 +1,55 @@
+use bevy::prelude::*;
+use leafwing_input_manager::prelude::ActionState;
+
+pub mod catalog_ui;
+pub mod hotbar_ui;
+pub mod interior;
+pub mod move_tool;
+pub mod placement;
+
+use crate::input::{Action, CursorState};
+
+pub struct DecorationPlugin;
+
+impl Plugin for DecorationPlugin {
+    fn build(&self, app: &mut App) {
+        app.add_systems(Update, toggle_decoration_mode);
+    }
+}
+
+#[derive(Resource, Default)]
+pub struct DecorationMode {
+    pub tool: DecorationTool,
+    pub selected: usize,
+    pub rotation_radians: f32,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum DecorationTool {
+    #[default]
+    Place,
+    Move,
+    Remove,
+}
+
+fn toggle_decoration_mode(
+    mut commands: Commands,
+    action_state: Res<ActionState<Action>>,
+    decoration_mode: Option<Res<DecorationMode>>,
+    cursor: Res<CursorState>,
+) {
+    if cursor.keyboard_over_ui {
+        return;
+    }
+    if !action_state.just_pressed(&Action::ToggleDecoration) {
+        return;
+    }
+    match decoration_mode {
+        Some(_) => commands.remove_resource::<DecorationMode>(),
+        None => {
+            // Mutual exclusion: entering decoration mode exits build mode.
+            commands.remove_resource::<crate::building::BuildMode>();
+            commands.insert_resource(DecorationMode::default());
+        }
+    }
+}
