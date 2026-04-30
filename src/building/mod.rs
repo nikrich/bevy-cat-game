@@ -2,10 +2,9 @@ use bevy::ecs::system::SystemParam;
 use bevy::prelude::*;
 
 pub mod collision;
-pub mod history;
 pub mod ui;
 
-pub use history::{apply_redo, apply_undo, BuildHistory, BuildOp, PieceRef};
+pub use crate::edit::{apply_redo, apply_undo, BuildOp, EditHistory, PieceRef};
 
 use leafwing_input_manager::prelude::ActionState;
 
@@ -553,7 +552,7 @@ fn toggle_build_mode(
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
     catalog: Res<InteriorCatalog>,
-    mut history: ResMut<BuildHistory>,
+    mut history: ResMut<EditHistory>,
     cursor: Res<CursorState>,
 ) {
     if cursor.keyboard_over_ui {
@@ -1286,7 +1285,7 @@ fn place_building(
     mut materials: ResMut<Assets<StandardMaterial>>,
     noise: Res<WorldNoise>,
     terrain: Res<Terrain>,
-    mut history: ResMut<BuildHistory>,
+    mut history: ResMut<EditHistory>,
     catalog: Res<InteriorCatalog>,
 ) {
     let Some(mut mode) = build_mode else { return };
@@ -1455,7 +1454,7 @@ fn place_replace(
     placed_q: &Query<(&Transform, &PlacedBuilding), Without<BuildPreview>>,
     meshes: &mut ResMut<Assets<Mesh>>,
     materials: &mut ResMut<Assets<StandardMaterial>>,
-    history: &mut BuildHistory,
+    history: &mut EditHistory,
     catalog: &InteriorCatalog,
 ) {
     if !INFINITE_RESOURCES && inventory.count(item) == 0 {
@@ -1560,7 +1559,7 @@ fn paint_stamp(
     }
 }
 
-fn flush_paint_batch(mode: &mut BuildMode, history: &mut BuildHistory) {
+fn flush_paint_batch(mode: &mut BuildMode, history: &mut EditHistory) {
     if mode.paint_batch.is_empty() {
         return;
     }
@@ -1582,7 +1581,7 @@ fn remove_clicked_piece(
     registry: &ItemRegistry,
     inventory: &mut Inventory,
     inv_events: &mut MessageWriter<InventoryChanged>,
-    history: &mut BuildHistory,
+    history: &mut EditHistory,
 ) {
     // Raycast hit is the only path with cube colliders — the camera ray
     // hits the cube directly when the player visually points at it. The
@@ -1625,7 +1624,7 @@ fn place_wall_line(
     materials: &mut ResMut<Assets<StandardMaterial>>,
     terrain: &Terrain,
     noise: &WorldNoise,
-    history: &mut BuildHistory,
+    history: &mut EditHistory,
     catalog: &InteriorCatalog,
 ) {
     match mode.line_anchor {
@@ -1725,7 +1724,7 @@ fn place_single(
     materials: &mut ResMut<Assets<StandardMaterial>>,
     terrain: &Terrain,
     noise: &WorldNoise,
-    history: &mut BuildHistory,
+    history: &mut EditHistory,
     catalog: &InteriorCatalog,
 ) {
     if !INFINITE_RESOURCES && inventory.count(item) == 0 {
@@ -1799,7 +1798,7 @@ fn cancel_placing(
     keyboard: Res<ButtonInput<KeyCode>>,
     mouse: Res<ButtonInput<MouseButton>>,
     build_mode: Option<ResMut<BuildMode>>,
-    mut history: ResMut<BuildHistory>,
+    mut history: ResMut<EditHistory>,
 ) {
     let cancel = keyboard.just_pressed(KeyCode::Escape)
         || mouse.just_pressed(MouseButton::Right);

@@ -7,7 +7,7 @@
 use bevy::prelude::*;
 use bevy_egui::{egui, EguiContexts, EguiPrimaryContextPass};
 
-use super::history::{apply_redo, apply_undo, BuildHistory};
+use crate::edit::{apply_redo, apply_undo, EditHistory};
 use super::{
     refresh_build_preview, BuildMode, BuildTool, PlaceableItems, PlacedBuilding,
 };
@@ -40,7 +40,7 @@ fn draw_build_tool_hotbar(
     build_mode: Option<Res<BuildMode>>,
     placeables: Res<PlaceableItems>,
     registry: Res<ItemRegistry>,
-    mut history: ResMut<BuildHistory>,
+    mut history: ResMut<EditHistory>,
     mut commands: Commands,
     asset_server: Res<AssetServer>,
     mut meshes: ResMut<Assets<Mesh>>,
