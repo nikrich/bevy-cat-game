@@ -147,6 +147,28 @@ pub use crate::decoration::interior::InteriorSpawnRequest;
 #[derive(Component)]
 pub(crate) struct BuildPreview;
 
+/// Tear down the build-mode resource: flushes any in-progress paint batch
+/// to history, despawns the preview / line ghosts / remove highlight, and
+/// removes the resource. Call this before swapping into another mode so
+/// orphaned ghost entities don't accumulate.
+pub(crate) fn exit_build_mode(
+    commands: &mut Commands,
+    mode: &mut BuildMode,
+    history: &mut EditHistory,
+) {
+    flush_paint_batch(mode, history);
+    if let Some(preview) = mode.preview_entity.take() {
+        commands.entity(preview).despawn();
+    }
+    for ghost in mode.line_ghosts.drain(..) {
+        commands.entity(ghost).despawn();
+    }
+    if let Some(highlight) = mode.remove_highlight.take() {
+        commands.entity(highlight).despawn();
+    }
+    commands.remove_resource::<BuildMode>();
+}
+
 fn toggle_build_mode(
     mut commands: Commands,
     action_state: Res<ActionState<Action>>,
@@ -160,6 +182,8 @@ fn toggle_build_mode(
     catalog: Res<InteriorCatalog>,
     mut history: ResMut<EditHistory>,
     cursor: Res<CursorState>,
+    mut edit_mode: ResMut<crate::world::edit::EditMode>,
+    mut crafting: ResMut<crate::crafting::CraftingState>,
 ) {
     if cursor.keyboard_over_ui {
         return;
@@ -170,20 +194,10 @@ fn toggle_build_mode(
 
     match build_mode {
         Some(mut mode) => {
-            flush_paint_batch(&mut mode, &mut history);
-            if let Some(preview) = mode.preview_entity {
-                commands.entity(preview).despawn();
-            }
-            for ghost in &mode.line_ghosts {
-                commands.entity(*ghost).despawn();
-            }
-            if let Some(highlight) = mode.remove_highlight {
-                commands.entity(highlight).despawn();
-            }
-            commands.remove_resource::<BuildMode>();
+            exit_build_mode(&mut commands, &mut mode, &mut history);
         }
         None => {
-            // Default to the first Wall variant — cubes are the build
+            // Default to the first Wall variant -- cubes are the build
             // primitive in the cube-grid model, so the player almost
             // always wants Wall ready on entry. Falls back to the first
             // placeable with stock if no walls are stocked.
@@ -214,7 +228,7 @@ fn toggle_build_mode(
                 // `inventory.count(item) > 0` left the build mode visually
                 // empty when a save loaded with depleted counts (which can
                 // happen even with INFINITE_RESOURCES if the save was
-                // created without the cheat). The ghost is informational —
+                // created without the cheat). The ghost is informational --
                 // the actual placement still gates on inventory when
                 // INFINITE_RESOURCES is off.
                 refresh_build_preview(
@@ -228,8 +242,10 @@ fn toggle_build_mode(
                     &catalog,
                 );
             }
-            // Mutual exclusion: entering build mode exits decoration mode.
+            // Mutual exclusion: entering build mode exits all other modes.
             commands.remove_resource::<crate::decoration::DecorationMode>();
+            edit_mode.active = false;
+            crafting.open = false;
             commands.insert_resource(mode);
         }
     }

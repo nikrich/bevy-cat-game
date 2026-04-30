@@ -160,19 +160,26 @@ pub fn register(app: &mut App) {
     );
 }
 
-/// `T` toggles edit mode. Suppressed while the crafting menu is open or
-/// build mode is active, so the keypress never collides with another mode.
+/// `T` toggles edit mode. On entry, exits all other modes first so only
+/// one mode is ever active at a time.
 fn toggle_edit_mode(
+    mut commands: Commands,
     action_state: Res<ActionState<Action>>,
-    crafting: Res<CraftingState>,
-    build_mode: Option<Res<BuildMode>>,
     mut edit_mode: ResMut<EditMode>,
+    build_mode: Option<ResMut<BuildMode>>,
+    mut history: ResMut<crate::edit::EditHistory>,
+    mut crafting: ResMut<CraftingState>,
 ) {
     if !action_state.just_pressed(&Action::ToggleEditTerrain) {
         return;
     }
-    if crafting.open || build_mode.is_some() {
-        return;
+    if !edit_mode.active {
+        // Entering edit mode -- exit all other modes first.
+        if let Some(mut bm) = build_mode {
+            crate::building::exit_build_mode(&mut commands, &mut bm, &mut history);
+        }
+        commands.remove_resource::<crate::decoration::DecorationMode>();
+        crafting.open = false;
     }
     edit_mode.active = !edit_mode.active;
     edit_mode.tick_timer = 0.0;

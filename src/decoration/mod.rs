@@ -45,6 +45,10 @@ fn toggle_decoration_mode(
     action_state: Res<ActionState<Action>>,
     decoration_mode: Option<Res<DecorationMode>>,
     cursor: Res<CursorState>,
+    build_mode: Option<ResMut<crate::building::BuildMode>>,
+    mut history: ResMut<crate::edit::EditHistory>,
+    mut edit_mode: ResMut<crate::world::edit::EditMode>,
+    mut crafting: ResMut<crate::crafting::CraftingState>,
 ) {
     if cursor.keyboard_over_ui {
         return;
@@ -55,8 +59,12 @@ fn toggle_decoration_mode(
     match decoration_mode {
         Some(_) => commands.remove_resource::<DecorationMode>(),
         None => {
-            // Mutual exclusion: entering decoration mode exits build mode.
-            commands.remove_resource::<crate::building::BuildMode>();
+            // Mutual exclusion: entering decoration mode exits all other modes.
+            if let Some(mut bm) = build_mode {
+                crate::building::exit_build_mode(&mut commands, &mut bm, &mut history);
+            }
+            edit_mode.active = false;
+            crafting.open = false;
             commands.insert_resource(DecorationMode::default());
         }
     }

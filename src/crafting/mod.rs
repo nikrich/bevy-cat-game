@@ -178,13 +178,26 @@ impl RecipeRegistry {
 }
 
 fn toggle_crafting_menu(
+    mut commands: Commands,
     action_state: Res<ActionState<Action>>,
     mut state: ResMut<CraftingState>,
     recipes: Res<RecipeRegistry>,
+    build_mode: Option<ResMut<crate::building::BuildMode>>,
+    mut history: ResMut<crate::edit::EditHistory>,
+    mut edit_mode: ResMut<crate::world::edit::EditMode>,
 ) {
     if action_state.just_pressed(&Action::ToggleCraft) {
+        let was_open = state.open;
         state.open = !state.open;
         state.selected_in_category = 0;
+        if !was_open {
+            // Crafting just opened -- exit all other modes.
+            if let Some(mut bm) = build_mode {
+                crate::building::exit_build_mode(&mut commands, &mut bm, &mut history);
+            }
+            commands.remove_resource::<crate::decoration::DecorationMode>();
+            edit_mode.active = false;
+        }
     }
 
     if !state.open {
