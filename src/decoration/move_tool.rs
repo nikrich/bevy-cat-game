@@ -13,6 +13,14 @@ use crate::world::terrain::Terrain;
 use super::placement::{compute_decoration_placement, DecorationPreview};
 use super::{DecorationMode, DecorationTool};
 
+/// Marker for the entity currently being dragged by the Move tool.
+/// Lets `carry_follow_cursor` use a mutable Transform query that's
+/// disjoint from the read-only `placed_read_q` used for placement
+/// computation -- both queries match `PlacedItem`, so without this
+/// marker Bevy rejects the system at startup with B0001.
+#[derive(Component)]
+pub struct CarriedDecoration;
+
 /// Carry state for the Move tool. `entity` holds the entity being dragged
 /// while `just_picked_up` blocks drop from firing in the same frame as pickup.
 #[derive(Resource, Default)]
@@ -25,6 +33,7 @@ pub struct MoveCarry {
 
 #[allow(clippy::too_many_arguments)]
 pub fn pickup_decoration(
+    mut commands: Commands,
     decoration_mode: Option<Res<DecorationMode>>,
     cursor: Res<CursorState>,
     mut carry: ResMut<MoveCarry>,
@@ -52,6 +61,7 @@ pub fn pickup_decoration(
     }
     carry.entity = Some(hit.entity);
     carry.just_picked_up = true;
+    commands.entity(hit.entity).insert(CarriedDecoration);
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -59,21 +69,31 @@ pub fn carry_follow_cursor(
     decoration_mode: Option<Res<DecorationMode>>,
     cursor: Res<CursorState>,
     carry: Res<MoveCarry>,
-    // Read-only for placement computation; Without<DecorationPreview> keeps the ghost out.
-    placed_read_q: Query<(&Transform, &PlacedItem), Without<DecorationPreview>>,
+    // Read-only query: every PlacedItem EXCEPT the carried one. The
+    // Without<CarriedDecoration> filter keeps this disjoint from the
+    // mutable carried-entity query below.
+    placed_read_q: Query<
+        (&Transform, &PlacedItem),
+        (Without<DecorationPreview>, Without<CarriedDecoration>),
+    >,
+    // Read-only access to the carried entity's PlacedItem (the def is
+    // needed for placement computation). Disjoint from `placed_read_q`
+    // by the With<CarriedDecoration> filter.
+    carried_placed_q: Query<&PlacedItem, With<CarriedDecoration>>,
     registry: Res<ItemRegistry>,
     terrain: Res<Terrain>,
     noise: Res<WorldNoise>,
     catalog: Res<InteriorCatalog>,
-    // Mutable transform for the carried entity; same filter set to satisfy Bevy.
-    mut carried_tf_q: Query<&mut Transform, (With<PlacedItem>, Without<DecorationPreview>)>,
+    // Mutable Transform for the carried entity. Disjoint from
+    // `placed_read_q` because of CarriedDecoration filter.
+    mut carried_tf_q: Query<&mut Transform, With<CarriedDecoration>>,
 ) {
     let Some(mode) = decoration_mode else { return };
     if !matches!(mode.tool, DecorationTool::Move) {
         return;
     }
     let Some(entity) = carry.entity else { return };
-    let Ok((_, placed)) = placed_read_q.get(entity) else { return };
+    let Ok(placed) = carried_placed_q.get(entity) else { return };
     let Some(def) = registry.get(placed.item) else { return };
 
     let pos = compute_decoration_placement(
@@ -93,6 +113,7 @@ pub fn carry_follow_cursor(
 }
 
 pub fn drop_decoration(
+    mut commands: Commands,
     keyboard: Res<ButtonInput<KeyCode>>,
     decoration_mode: Option<Res<DecorationMode>>,
     cursor: Res<CursorState>,
@@ -105,14 +126,16 @@ pub fn drop_decoration(
         return;
     }
 
-    let Some(mode) = decoration_mode else {
-        // Mode exited -- drop carry unconditionally.
-        carry.entity = None;
-        return;
-    };
-    if !matches!(mode.tool, DecorationTool::Move) {
-        // Tool changed -- drop carry.
-        carry.entity = None;
+    let force_drop = decoration_mode
+        .as_ref()
+        .map(|m| !matches!(m.tool, DecorationTool::Move))
+        .unwrap_or(true);
+
+    if force_drop {
+        // Mode exited or tool changed -- drop carry unconditionally.
+        if let Some(e) = carry.entity.take() {
+            commands.entity(e).remove::<CarriedDecoration>();
+        }
         return;
     }
     if carry.entity.is_none() {
@@ -123,7 +146,9 @@ pub fn drop_decoration(
     if !drop {
         return;
     }
-    carry.entity = None;
+    if let Some(e) = carry.entity.take() {
+        commands.entity(e).remove::<CarriedDecoration>();
+    }
     // No inventory delta. Move-undo is a future enhancement (record
     // (entity, before_tf, after_tf) and emit a BuildOp variant).
 }

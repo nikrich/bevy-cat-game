@@ -293,11 +293,15 @@ pub fn update_preview(
 /// `interior_render_params` -- without this, every interior asset sinks
 /// into or floats above the surface depending on where the GLB author
 /// put the origin.
-pub fn compute_decoration_placement(
+///
+/// The query filter is generic so callers can narrow further (e.g. the
+/// Move tool excludes the currently-carried entity to avoid a query
+/// conflict against its mutable Transform).
+pub fn compute_decoration_placement<F: bevy::ecs::query::QueryFilter>(
     cursor_world: Vec3,
     cursor_hit: Option<CursorHit>,
     def: &crate::items::ItemDef,
-    placed_q: &Query<(&Transform, &PlacedItem), Without<DecorationPreview>>,
+    placed_q: &Query<(&Transform, &PlacedItem), F>,
     registry: &ItemRegistry,
     terrain: &Terrain,
     noise: &WorldNoise,
