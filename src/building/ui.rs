@@ -8,9 +8,11 @@ use bevy::prelude::*;
 use bevy_egui::{egui, EguiContexts, EguiPrimaryContextPass};
 
 use super::history::{apply_redo, apply_undo, BuildHistory};
-use super::{BuildMode, BuildTool, PlaceableItems, PlacedBuilding};
+use super::{
+    refresh_build_preview, BuildMode, BuildTool, PlaceableItems, PlacedBuilding,
+};
 use crate::inventory::{Inventory, InventoryChanged};
-use crate::items::ItemRegistry;
+use crate::items::{ItemRegistry, ItemTags};
 
 const PARCHMENT: egui::Color32 = egui::Color32::from_rgb(54, 38, 24);
 const GOLD: egui::Color32 = egui::Color32::from_rgb(220, 168, 76);
@@ -18,7 +20,10 @@ const GOLD_DIM: egui::Color32 = egui::Color32::from_rgb(140, 105, 50);
 const TEXT_DIM: egui::Color32 = egui::Color32::from_rgb(172, 158, 130);
 
 pub fn register(app: &mut App) {
-    app.add_systems(EguiPrimaryContextPass, draw_build_tool_hotbar);
+    app.add_systems(
+        EguiPrimaryContextPass,
+        (draw_build_tool_hotbar, draw_decoration_catalog),
+    );
 }
 
 fn panel_frame() -> egui::Frame {
@@ -124,3 +129,64 @@ fn draw_build_tool_hotbar(
 
     Ok(())
 }
+
+/// Right-side decoration catalog — DECORATION + FURNITURE placeables in
+/// a clickable list. Selecting one switches BuildMode.tool to Place and
+/// snaps mode.selected to that item. Always visible while in build mode
+/// so the player can flip between cubes (via the bottom tool palette
+/// + [/]/Q/E/scroll) and decorations (via this panel) without a chord.
+#[allow(clippy::too_many_arguments)]
+fn draw_decoration_catalog(
+    mut contexts: EguiContexts,
+    build_mode: Option<ResMut<BuildMode>>,
+    placeables: Res<PlaceableItems>,
+    registry: Res<ItemRegistry>,
+    asset_server: Res<AssetServer>,
+    mut commands: Commands,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut materials: ResMut<Assets<StandardMaterial>>,
+) -> Result {
+    let Some(mut mode) = build_mode else { return Ok(()) };
+    let ctx = contexts.ctx_mut()?;
+
+    egui::Window::new("build_decoration_catalog")
+        .anchor(egui::Align2::RIGHT_TOP, [-16.0, 80.0])
+        .collapsible(false)
+        .resizable(false)
+        .title_bar(false)
+        .frame(panel_frame())
+        .show(ctx, |ui| {
+            ui.colored_label(GOLD, "Decorations");
+            ui.add_space(4.0);
+            for (idx, item_id) in placeables.0.iter().enumerate() {
+                let Some(def) = registry.get(*item_id) else { continue };
+                let is_decor = def.tags.contains(ItemTags::DECORATION)
+                    || def.tags.contains(ItemTags::FURNITURE);
+                if !is_decor {
+                    continue;
+                }
+                let active = idx == mode.selected && mode.tool == BuildTool::Place;
+                let text = if active {
+                    egui::RichText::new(&def.display_name).color(GOLD).strong()
+                } else {
+                    egui::RichText::new(&def.display_name).color(TEXT_DIM)
+                };
+                if ui.add(egui::Button::new(text).frame(false)).clicked() {
+                    mode.tool = BuildTool::Place;
+                    mode.selected = idx;
+                    refresh_build_preview(
+                        &mut commands,
+                        &mut mode,
+                        *item_id,
+                        &registry,
+                        &asset_server,
+                        &mut meshes,
+                        &mut materials,
+                    );
+                }
+            }
+        });
+
+    Ok(())
+}
+

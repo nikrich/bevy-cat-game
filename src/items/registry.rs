@@ -116,6 +116,13 @@ pub fn seed_default_items(mut registry: ResMut<ItemRegistry>) {
         (Form::Chair, Material::Pine, furniture),
         (Form::Table, Material::Oak, furniture),
         (Form::Wreath, Material::None, decoration),
+        // Asset-backed decorations & furniture (kenney/kaykit GLBs).
+        // Material::None — the source model brings its own materials.
+        (Form::Bed, Material::None, furniture),
+        (Form::Chest, Material::None, furniture),
+        (Form::Campfire, Material::None, decoration),
+        (Form::Barrel, Material::None, decoration),
+        (Form::Bucket, Material::None, decoration),
         // Structural
         (Form::Floor, Material::Oak, structural),
         (Form::Floor, Material::Pine, structural),

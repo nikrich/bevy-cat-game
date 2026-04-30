@@ -54,6 +54,13 @@ pub enum Form {
     Chair,
     Table,
 
+    // Asset-backed decorations (kenney_survival, kaykit_restaurant)
+    Bed,
+    Chest,
+    Campfire,
+    Barrel,
+    Bucket,
+
     // Modular building
     Floor,
     Wall,
@@ -84,6 +91,11 @@ impl Form {
             Form::Wreath => "Wreath",
             Form::Chair => "Chair",
             Form::Table => "Table",
+            Form::Bed => "Bed",
+            Form::Chest => "Chest",
+            Form::Campfire => "Campfire",
+            Form::Barrel => "Barrel",
+            Form::Bucket => "Bucket",
             Form::Floor => "Floor",
             Form::Wall => "Wall",
             Form::Door => "Door",
@@ -111,6 +123,11 @@ impl Form {
             Form::Wreath => "wreath",
             Form::Chair => "chair",
             Form::Table => "table",
+            Form::Bed => "bed",
+            Form::Chest => "chest",
+            Form::Campfire => "campfire",
+            Form::Barrel => "barrel",
+            Form::Bucket => "bucket",
             Form::Floor => "floor",
             Form::Wall => "wall",
             Form::Door => "door",
@@ -164,15 +181,32 @@ impl Form {
             Form::Chair => (0.55, 0.90, 0.18),
             Form::FlowerPot => (0.55, 0.55, 0.45), // round pot
             Form::Wreath => (0.85, 0.85, 0.50),    // ring
+            Form::Bed => (1.0, 0.40, 0.10),
+            Form::Chest => (0.85, 0.55, 0.12),
+            Form::Campfire => (0.85, 0.30, 0.40),
+            Form::Barrel => (0.55, 0.95, 0.50),
+            Form::Bucket => (0.50, 0.55, 0.30),
             _ => (1.0, 1.0, 0.20),
         }
     }
 
-    /// glTF scene path for placed-building rendering. Currently `None` for
-    /// every placeable -- procedural primitives via `make_mesh()` until proper
-    /// hand-authored assets land.
+    /// glTF/GLB scene path for placed-building rendering. When `Some`,
+    /// `spawn_placed_building` loads the scene; otherwise it falls back to
+    /// the procedural mesh from `make_mesh()`. Decorations + furniture
+    /// route to hand-authored Kenney / Kaykit models so they read as
+    /// actual furniture instead of cuboid stand-ins. Cubes and structural
+    /// pieces stay procedural — they're geometric primitives, by design.
     pub fn scene_path(self) -> Option<&'static str> {
-        None
+        match self {
+            Form::Bed => Some("models/kenney_survival/bedroll.glb#Scene0"),
+            Form::Chest => Some("models/kenney_survival/chest.glb#Scene0"),
+            Form::Campfire => Some("models/kenney_survival/campfire-pit.glb#Scene0"),
+            Form::Barrel => Some("models/kenney_survival/barrel.glb#Scene0"),
+            Form::Bucket => Some("models/kenney_survival/bucket.glb#Scene0"),
+            Form::Chair => Some("models/kaykit_restaurant/chair_A.gltf#Scene0"),
+            Form::Table => Some("models/kaykit_restaurant/table_round_A.gltf#Scene0"),
+            _ => None,
+        }
     }
 
     /// SceneRoot scale applied at placement. All placeables are procedural
@@ -210,6 +244,13 @@ impl Form {
             Form::Chair => 0.35,
             Form::FlowerPot => 0.125,
             Form::Wreath => 0.10,
+            // Asset-backed forms — heights are estimates from the source
+            // GLBs; tweak when they don't sit flush after first placetest.
+            Form::Bed => 0.15,
+            Form::Chest => 0.30,
+            Form::Campfire => 0.10,
+            Form::Barrel => 0.50,
+            Form::Bucket => 0.20,
             Form::Stew => 0.22,
             _ => 0.05,
         }
@@ -231,6 +272,11 @@ impl Form {
             Form::Chair => 0.70,
             Form::FlowerPot => 0.25,
             Form::Wreath => 0.40,
+            Form::Bed => 0.30,
+            Form::Chest => 0.60,
+            Form::Campfire => 0.20,
+            Form::Barrel => 1.00,
+            Form::Bucket => 0.40,
             Form::Stew => 0.44,
             _ => 0.30,
         }
@@ -269,6 +315,15 @@ impl Form {
             Form::Door => Mesh::from(Cuboid::new(0.9, 1.7, 0.12)),
             Form::Window => Mesh::from(Cuboid::new(0.9, 0.8, 0.12)),
             Form::Roof => Mesh::from(Cuboid::new(1.2, 0.18, 1.2)),
+            // Asset-backed forms render via SceneRoot (see scene_path);
+            // these procedural fallbacks are only used if asset loading
+            // fails. Tuned to roughly match the source models so a
+            // missing-asset frame doesn't look catastrophic.
+            Form::Bed => Mesh::from(Cuboid::new(1.0, 0.3, 2.0)),
+            Form::Chest => Mesh::from(Cuboid::new(0.8, 0.6, 0.5)),
+            Form::Campfire => Mesh::from(Cylinder::new(0.45, 0.2)),
+            Form::Barrel => Mesh::from(Cylinder::new(0.3, 1.0)),
+            Form::Bucket => Mesh::from(Cylinder::new(0.2, 0.4)),
             Form::Stew => Mesh::from(Sphere::new(0.22)),
         }
     }

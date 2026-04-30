@@ -475,10 +475,11 @@ fn select_build_tool(
     }
 }
 
-/// Q / E (and mouse scroll) cycle the active placeable while the Place
-/// tool is selected. Item selection is meaningless for Remove (clicks
-/// despawn whatever's under the cursor), so we silently ignore cycling
-/// in other tools.
+/// Q / E (and mouse scroll) cycle the active **structural** placeable
+/// (cubes / walls) while the Place tool is selected. Decorations live in
+/// the decoration catalog UI, not the keyboard cycle. Item selection is
+/// meaningless for Remove (clicks despawn whatever's under the cursor),
+/// so we silently ignore cycling in other tools.
 fn select_build_item(
     mut commands: Commands,
     action_state: Res<ActionState<Action>>,
@@ -494,17 +495,14 @@ fn select_build_item(
     if mode.tool != BuildTool::Place {
         return;
     }
-    let n = placeables.0.len();
-    if n == 0 {
-        return;
-    }
 
-    let mut new_idx: Option<usize> = None;
-    if action_state.just_pressed(&Action::HotbarNext) {
-        new_idx = Some((mode.selected + 1) % n);
+    let new_idx = if action_state.just_pressed(&Action::HotbarNext) {
+        next_structural(&placeables, &registry, mode.selected, 1)
     } else if action_state.just_pressed(&Action::HotbarPrev) {
-        new_idx = Some((mode.selected + n - 1) % n);
-    }
+        next_structural(&placeables, &registry, mode.selected, -1)
+    } else {
+        None
+    };
 
     if let Some(idx) = new_idx {
         switch_selected_item(
@@ -544,15 +542,11 @@ fn cycle_build_item(
     if mode.tool != BuildTool::Place {
         return;
     }
-    let n = placeables.0.len();
-    if n == 0 {
-        return;
-    }
 
     let new_idx = if keys.just_pressed(KeyCode::BracketLeft) {
-        Some((mode.selected + n - 1) % n)
+        next_structural(&placeables, &registry, mode.selected, -1)
     } else if keys.just_pressed(KeyCode::BracketRight) {
-        Some((mode.selected + 1) % n)
+        next_structural(&placeables, &registry, mode.selected, 1)
     } else {
         None
     };
@@ -570,6 +564,36 @@ fn cycle_build_item(
             &mut materials,
         );
     }
+}
+
+/// Walk `placeables` from `current` in `dir` (+1 or -1), wrapping, and
+/// return the next index whose item is tagged `STRUCTURAL`. Returns
+/// `None` if no structural items exist (cycle is a no-op then).
+///
+/// Decorations and furniture are intentionally skipped — they live in the
+/// decoration catalog UI (see `building::ui::draw_decoration_catalog`),
+/// not the keyboard cycle, so the structural rotation stays focused.
+fn next_structural(
+    placeables: &PlaceableItems,
+    registry: &ItemRegistry,
+    current: usize,
+    dir: i32,
+) -> Option<usize> {
+    let n = placeables.0.len() as i32;
+    if n == 0 {
+        return None;
+    }
+    let mut i = current as i32;
+    for _ in 0..n {
+        i = (i + dir).rem_euclid(n);
+        let idx = i as usize;
+        if let Some(def) = placeables.0.get(idx).and_then(|id| registry.get(*id)) {
+            if def.tags.contains(ItemTags::STRUCTURAL) {
+                return Some(idx);
+            }
+        }
+    }
+    None
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1244,16 +1268,39 @@ pub fn spawn_placed_building(
 
     let mesh = def.form.make_mesh();
     let color = def.material.base_color();
+    let mut mat = StandardMaterial {
+        base_color: color,
+        perceptual_roughness: 0.8,
+        ..default()
+    };
+    // Lantern glows. Emissive in linear space — values > 1 are physically
+    // valid for HDR / bloom-aware pipelines. The warm yellow is biased
+    // toward red so it reads as candle-y rather than fluorescent.
+    if matches!(def.form, Form::Lantern) {
+        mat.emissive = LinearRgba::new(2.5, 1.6, 0.5, 1.0);
+    }
     let mut e = commands.spawn((
         PlacedBuilding { item },
         Mesh3d(meshes.add(mesh)),
-        MeshMaterial3d(materials.add(StandardMaterial {
-            base_color: color,
-            perceptual_roughness: 0.8,
-            ..default()
-        })),
+        MeshMaterial3d(materials.add(mat)),
         scaled,
     ));
+    // Lanterns also cast a warm point light so they actually illuminate
+    // their surroundings at dusk/night, not just glow on themselves.
+    if matches!(def.form, Form::Lantern) {
+        e.with_children(|p| {
+            p.spawn((
+                PointLight {
+                    color: Color::srgb(1.0, 0.78, 0.45),
+                    intensity: 1_500_000.0,
+                    range: 8.0,
+                    shadows_enabled: false,
+                    ..default()
+                },
+                Transform::from_xyz(0.0, 0.15, 0.0),
+            ));
+        });
+    }
     collision::attach_for_form(&mut e, def.form, &transform);
     Some(e.id())
 }
