@@ -6,7 +6,7 @@
 use bevy::prelude::*;
 
 use crate::animals::Animal;
-use crate::building::PlacedBuilding;
+use crate::edit::PlacedItem;
 use leafwing_input_manager::prelude::ActionState;
 
 use crate::crafting::CraftingState;
@@ -111,7 +111,7 @@ fn examine_system(
     player_q: Query<&Transform, With<Player>>,
     props: Query<(&GlobalTransform, &PropCollision, &PropKind)>,
     animals: Query<(&GlobalTransform, &Animal)>,
-    buildings: Query<(&GlobalTransform, &PlacedBuilding)>,
+    buildings: Query<(&GlobalTransform, &PlacedItem)>,
 ) {
     if !action_state.just_pressed(&Action::Examine) || verbs_blocked(&crafting) {
         return;

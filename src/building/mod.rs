@@ -2,19 +2,23 @@ use bevy::ecs::system::SystemParam;
 use bevy::prelude::*;
 
 pub mod collision;
-pub mod history;
+pub mod placement;
 pub mod ui;
 
-pub use history::{apply_redo, apply_undo, BuildHistory, BuildOp, PieceRef};
+pub use crate::edit::{apply_redo, apply_undo, BuildOp, EditHistory, PieceRef};
+pub use placement::{
+    compute_placement, anchor_from_hit, resolve_chain,
+    wall_segment_transforms, segment_end, snap_axis,
+    is_position_occupied, footprint_cell_centres,
+    cube_target_width, OCCUPIED_RADIUS, OCCUPIED_Y, WALL_LENGTH,
+};
 
 use leafwing_input_manager::prelude::ActionState;
-
-use bevy::gltf::{Gltf, GltfMesh, GltfNode};
 
 use crate::input::{Action, CursorHit, CursorState};
 use crate::inventory::{Inventory, InventoryChanged};
 use crate::items::{
-    AabbBounds, Form, InteriorCatalog, ItemId, ItemRegistry, ItemTags, PlacementStyle,
+    Form, InteriorCatalog, ItemId, ItemRegistry, ItemTags, PlacementStyle,
 };
 use crate::player::Player;
 use crate::world::biome::WorldNoise;
@@ -40,11 +44,9 @@ impl Plugin for BuildingPlugin {
                     toggle_xray,
                     update_preview,
                     place_building,
-                    resolve_interior_spawns,
                 ),
             );
         collision::register(app);
-        history::register(app);
         ui::register(app);
     }
 }
@@ -95,24 +97,6 @@ const PICKUP_RADIUS: f32 = 0.55;
 /// to a `Cheats` resource) when shipping to players.
 const INFINITE_RESOURCES: bool = true;
 
-/// Wall length in world units. The line tool stamps walls centred at
-/// `anchor + (i + 0.5) * WALL_LENGTH * axis_dir` so each wall fills exactly
-/// one 1 m cell along the dominant axis.
-const WALL_LENGTH: f32 = 1.0;
-
-/// XZ distance under which a planned wall position is considered already
-/// covered by an existing placed piece. Skips that cell from both ghost and
-/// placement so re-running a line over an existing wall — including the
-/// shared corner cell of two perpendicular line segments — doesn't overlap.
-const OCCUPIED_RADIUS: f32 = 0.4;
-/// Y window for "two pieces overlap". Tuned so:
-///   - two cubes stacked vertically (Δy = 1.0) don't flag each other,
-///   - a floor (lift 0.06) on top of a 1m wall (centre y = 0.5, Δy = 0.56)
-///     doesn't see the wall as an occupant — that lets the player paint
-///     2nd-storey floors over a stacked wall layer,
-///   - two pieces at the same Y still conflict.
-const OCCUPIED_Y: f32 = 0.5;
-
 pub fn init_placeable_items(
     registry: Res<ItemRegistry>,
     mut placeables: ResMut<PlaceableItems>,
@@ -157,390 +141,32 @@ impl BuildMode {
     }
 }
 
-#[derive(Component)]
-pub struct PlacedBuilding {
-    pub item: ItemId,
-}
+pub use crate::edit::PlacedItem;
+pub use crate::decoration::interior::InteriorSpawnRequest;
 
 #[derive(Component)]
-struct BuildPreview;
+pub(crate) struct BuildPreview;
 
-/// Marker for an entity whose interior mesh+material are pending GLB
-/// load. `resolve_interior_spawns` polls these and once the named node
-/// resolves, spawns Mesh3d+MeshMaterial3d children for each primitive.
-/// Removed from the entity once resolved.
-///
-/// `child_offset` and `child_scale_mul` are pre-computed at spawn time
-/// (when we already have the catalog AABB) so resolve doesn't need
-/// registry / catalog access. They make every interior asset render with
-/// its AABB centred at the parent transform — without that, GLB nodes
-/// whose origin is at a corner / floor placed visibly off-grid even with
-/// correct snap.
-#[derive(Component)]
-pub struct InteriorSpawnRequest {
-    pub gltf: Handle<Gltf>,
-    pub node_name: String,
-    /// Local translation applied to each spawned child mesh. Cancels the
-    /// asset's intrinsic origin offset (set to `-aabb.centre`).
-    pub child_offset: Vec3,
-    /// Per-axis scale multiplier applied on top of the GLB node's own
-    /// scale. `Vec3::ONE` for most assets; doors set `x` so the world
-    /// width = 1 cube cell.
-    pub child_scale_mul: Vec3,
-}
-
-/// Resolve the ghost chain's direction and length from cursor delta to
-/// anchor on the **horizontal plane** (X/Z only). Vertical chains were
-/// tried and reverted — terrain elevation differences and raycast hits at
-/// varying heights produced false-positive vertical detections that broke
-/// horizontal chains across uneven terrain. Vertical building is handled
-/// by single-click face-stacking (click a cube's top face → cube above).
-fn resolve_chain(anchor: Vec3, cursor: Vec3) -> (bool, f32, usize) {
-    let dx = cursor.x - anchor.x;
-    let dz = cursor.z - anchor.z;
-    let cursor_moved = dx.abs() > 0.05 || dz.abs() > 0.05;
-    let along_x = if cursor_moved { dx.abs() >= dz.abs() } else { true };
-    let segment_length = if along_x { dx.abs() } else { dz.abs() };
-    let n = (segment_length / WALL_LENGTH).round() as usize + 1;
-    let raw_sign = if along_x { dx } else { dz };
-    let dir_sign = if !cursor_moved || raw_sign >= 0.0 { 1.0 } else { -1.0 };
-    (along_x, dir_sign, n)
-}
-
-/// Line-tool first-click anchor. Runs `compute_placement` for `Form::Wall`
-/// — the anchor is literally the position the first wall would occupy.
-/// All subsequent walls in the chain mirror that center-Y.
-fn anchor_from_hit(
-    cursor_world: Vec3,
-    cursor_hit: Option<CursorHit>,
-    placed_q: &Query<(&Transform, &PlacedBuilding), Without<BuildPreview>>,
-    registry: &ItemRegistry,
-    terrain: &Terrain,
-    noise: &WorldNoise,
-) -> Vec3 {
-    compute_placement(
-        cursor_world,
-        cursor_hit,
-        Form::Wall,
-        registry,
-        placed_q,
-        terrain,
-        noise,
-    )
-}
-
-/// Compute the wall transforms for a line from `anchor` to `cursor`.
-///
-/// All walls in the segment share `anchor.y` (the wall *center* Y from
-/// `compute_placement` — already includes `placement_lift`). The chain
-/// stays flat at the anchor's height; perpendicular existing walls in the
-/// path are intersected at the same Y instead of being climbed over.
-/// Vertical stacking happens at the next first-click via `anchor_from_hit`.
-fn wall_segment_transforms(anchor: Vec3, cursor: Vec3) -> Vec<Transform> {
-    let (along_x, dir_sign, n) = resolve_chain(anchor, cursor);
-    let yaw = if along_x { 0.0 } else { std::f32::consts::FRAC_PI_2 };
-    let y = anchor.y;
-
-    (0..n)
-        .map(|i| {
-            let cell_offset = i as f32 * WALL_LENGTH * dir_sign;
-            let pos_x = if along_x { anchor.x + cell_offset } else { anchor.x };
-            let pos_z = if along_x { anchor.z } else { anchor.z + cell_offset };
-            Transform::from_xyz(pos_x, y, pos_z).with_rotation(Quat::from_rotation_y(yaw))
-        })
-        .collect()
-}
-
-/// Continuous-mode anchor advance. After a segment is confirmed, the anchor
-/// jumps to the **last placed cube** (anchor + (n-1) cells). The next
-/// chain's `wall_segment_transforms` will include this cube as its first
-/// position, but `is_position_occupied` skips it silently — so the new
-/// chain extends from the cube's adjacent face in whichever direction the
-/// cursor moves (straight ahead → row continues, perpendicular → L-bend
-/// sharing the corner cube).
-fn segment_end(anchor: Vec3, cursor: Vec3) -> Vec3 {
-    let (along_x, dir_sign, n) = resolve_chain(anchor, cursor);
-    let span = (n as f32 - 1.0) * WALL_LENGTH * dir_sign;
-    if along_x {
-        Vec3::new(anchor.x + span, anchor.y, anchor.z)
-    } else {
-        Vec3::new(anchor.x, anchor.y, anchor.z + span)
+/// Tear down the build-mode resource: flushes any in-progress paint batch
+/// to history, despawns the preview / line ghosts / remove highlight, and
+/// removes the resource. Call this before swapping into another mode so
+/// orphaned ghost entities don't accumulate.
+pub(crate) fn exit_build_mode(
+    commands: &mut Commands,
+    mode: &mut BuildMode,
+    history: &mut EditHistory,
+) {
+    flush_paint_batch(mode, history);
+    if let Some(preview) = mode.preview_entity.take() {
+        commands.entity(preview).despawn();
     }
-}
-
-/// Minecraft-style cube placement. The rapier raycast hit + surface normal
-/// determine which adjacent cell the new piece occupies:
-///
-/// - **Hit terrain** → cell at the hit point's snapped XZ on terrain.
-/// - **Hit a placed piece, normal pointing up** → cube directly above
-///   (new piece's bottom face = hit piece's top face).
-/// - **Hit a placed piece, normal pointing sideways** → cube one cell over
-///   in the normal's direction at the same height (new piece's bottom =
-///   hit piece's bottom).
-///
-/// Returns the new piece's **center** Y (what spawn_placed_building wants).
-fn compute_placement(
-    cursor_world: Vec3,
-    cursor_hit: Option<CursorHit>,
-    form: Form,
-    registry: &ItemRegistry,
-    placed_q: &Query<(&Transform, &PlacedBuilding), Without<BuildPreview>>,
-    terrain: &Terrain,
-    noise: &WorldNoise,
-) -> Vec3 {
-    let new_lift = form.placement_lift();
-
-    if let Some(hit) = cursor_hit {
-        if let Ok((tf, building)) = placed_q.get(hit.entity) {
-            if let Some(hit_def) = registry.get(building.item) {
-                let hit_lift = hit_def.form.placement_lift();
-                let hit_top = tf.translation.y + hit_lift;
-                let hit_bottom = tf.translation.y - hit_lift;
-
-                if hit.normal.y > 0.7 {
-                    // Top face — cube above (stacked).
-                    return Vec3::new(tf.translation.x, hit_top + new_lift, tf.translation.z);
-                }
-                if hit.normal.y.abs() < 0.3 {
-                    // Side face — cube adjacent in the normal's direction.
-                    // .round() snaps the normal step to a unit cell offset.
-                    let step =
-                        Vec3::new(hit.normal.x.round(), 0.0, hit.normal.z.round());
-                    return Vec3::new(
-                        tf.translation.x + step.x,
-                        hit_bottom + new_lift,
-                        tf.translation.z + step.z,
-                    );
-                }
-                // Slanted face (e.g. roof eave) — fall through to terrain.
-            }
-        }
-        // Hit terrain or a non-PlacedBuilding entity — snap hit XZ to the
-        // terrain cell *centre*. Cells span [i, i+1] (see
-        // `world::terrain` quad emit), so centres are at `i + 0.5`. Walls
-        // and floors snapped this way visually fill the terrain tile they
-        // sit on instead of straddling the boundary.
-        let cx = hit.point.x.floor() + 0.5;
-        let cz = hit.point.z.floor() + 0.5;
-        let ty = terrain.height_at_or_sample(cx, cz, noise);
-        return Vec3::new(cx, ty + new_lift, cz);
+    for ghost in mode.line_ghosts.drain(..) {
+        commands.entity(ghost).despawn();
     }
-
-    // No raycast hit — fall back to cursor's ground projection. Same
-    // half-integer snap as the terrain-hit branch.
-    let cx = cursor_world.x.floor() + 0.5;
-    let cz = cursor_world.z.floor() + 0.5;
-    let ty = terrain.height_at_or_sample(cx, cz, noise);
-    Vec3::new(cx, ty + new_lift, cz)
-}
-
-/// Whether `pos` is already covered by a placed piece. Same XZ box +
-/// generous Y window so wall-on-floor stacking isn't flagged as overlap.
-fn is_position_occupied(
-    pos: Vec3,
-    placed_q: &Query<(&Transform, &PlacedBuilding), Without<BuildPreview>>,
-) -> bool {
-    placed_q.iter().any(|(tf, _)| {
-        (tf.translation.x - pos.x).abs() < OCCUPIED_RADIUS
-            && (tf.translation.z - pos.z).abs() < OCCUPIED_RADIUS
-            && (tf.translation.y - pos.y).abs() < OCCUPIED_Y
-    })
-}
-
-/// Wall-mounted interior categories — the door + window pieces from the
-/// LowPoly Interior pack. Their width is force-stretched to a target cube
-/// width (`cube_target_width`) so they fit cleanly into a wall row.
-fn cube_target_width(def: &crate::items::ItemDef) -> Option<f32> {
-    match def.interior_category.as_deref() {
-        // 2-cell-wide pieces: each spans two wall cubes so the door / window
-        // is centred between them (footprint x = 2 → snaps to integer x,
-        // i.e. cell boundary), with one cube of frame on each side.
-        Some("door") | Some("doors2") | Some("window") | Some("windows2") => Some(2.0),
-        _ => None,
+    if let Some(highlight) = mode.remove_highlight.take() {
+        commands.entity(highlight).despawn();
     }
-}
-
-/// Compute the per-asset child offset (cancels intrinsic origin offset so
-/// the AABB centres at the parent transform) and per-axis scale multiplier
-/// (door / window categories get x stretched to fit a fixed cube width).
-/// Returns `(child_offset, child_scale_mul, effective_aabb)` where the
-/// effective AABB is the post-stretch AABB used for footprint and Y
-/// placement.
-fn interior_render_params(
-    def: &crate::items::ItemDef,
-    aabb: AabbBounds,
-) -> (Vec3, Vec3, AabbBounds) {
-    let parent_scale = def.form.placement_scale();
-    let mut scale_mul = Vec3::ONE;
-    let mut effective = aabb;
-    if let Some(target_world_x) = cube_target_width(def) {
-        if aabb.size().x > 1e-4 {
-            // World X = parent_scale * scale_mul.x * aabb.size().x → target
-            let target = target_world_x / (parent_scale * aabb.size().x);
-            scale_mul.x = target;
-            effective = AabbBounds {
-                min: Vec3::new(aabb.min.x * target, aabb.min.y, aabb.min.z),
-                max: Vec3::new(aabb.max.x * target, aabb.max.y, aabb.max.z),
-            };
-        }
-    }
-    // Recentre: the child meshes already get scaled by node TRS + scale_mul,
-    // so we shift them by -effective.centre() to land the AABB centre at
-    // the parent's local origin.
-    let child_offset = -effective.center();
-    (child_offset, scale_mul, effective)
-}
-
-/// Snap a 1-D position to the cube grid based on a footprint dimension.
-/// Terrain cells span `[i, i+1]` so cell *centres* are at `i + 0.5`.
-/// Walls / floors snap to those half-integer centres (see
-/// `compute_placement`), so:
-///   - **odd footprint** → centre on a cell (half-integer, e.g. `0.5`).
-///   - **even footprint** → centre between cells (integer, e.g. `1.0`),
-///     so the asset's left + right edges land on cell boundaries.
-/// Picking the wrong parity offsets the asset by half a cell and the
-/// door / window won't line up with the surrounding wall row.
-fn snap_axis(value: f32, cells: i32) -> f32 {
-    if cells.rem_euclid(2) == 1 {
-        value.floor() + 0.5
-    } else {
-        value.round()
-    }
-}
-
-/// All cell centres a footprint of `cells.x × cells.y` would cover when
-/// centred at `centre`. Used by the overlap check + the visual ghost.
-fn footprint_cell_centres(centre: Vec3, cells: IVec2) -> Vec<Vec3> {
-    let off_x = (cells.x - 1) as f32 * 0.5;
-    let off_z = (cells.y - 1) as f32 * 0.5;
-    let mut out = Vec::with_capacity((cells.x * cells.y) as usize);
-    for ix in 0..cells.x {
-        for iz in 0..cells.y {
-            out.push(Vec3::new(
-                centre.x + (ix as f32 - off_x),
-                centre.y,
-                centre.z + (iz as f32 - off_z),
-            ));
-        }
-    }
-    out
-}
-
-/// What an in-progress interior placement counts as "in the way".
-#[derive(Clone, Copy)]
-enum BlockingRule {
-    /// Default for furniture / props / decorations: every placed piece
-    /// blocks except floors (which are explicit "stand-on-top" surfaces).
-    AnyExceptFloor,
-    /// Carpets only: walls are the only blockers. Floors, other carpets,
-    /// chairs, tables, lamps — all fine to overlap (a carpet visually
-    /// goes under the items in the room).
-    WallsOnly,
-}
-
-fn blocking_rule_for(def: &crate::items::ItemDef) -> BlockingRule {
-    if matches!(def.interior_category.as_deref(), Some("carpet")) {
-        BlockingRule::WallsOnly
-    } else {
-        BlockingRule::AnyExceptFloor
-    }
-}
-
-/// True if every cell in the footprint at `centre` is clear of placed
-/// pieces under the given `rule`. See [`BlockingRule`] for which forms
-/// count as blockers.
-fn footprint_clear(
-    centre: Vec3,
-    cells: IVec2,
-    placed_q: &Query<(&Transform, &PlacedBuilding), Without<BuildPreview>>,
-    registry: &ItemRegistry,
-    rule: BlockingRule,
-) -> bool {
-    footprint_cell_centres(centre, cells).into_iter().all(|c| {
-        placed_q.iter().all(|(tf, b)| {
-            let def = match registry.get(b.item) {
-                Some(d) => d,
-                None => return true,
-            };
-            let blocks = match rule {
-                BlockingRule::AnyExceptFloor => !matches!(def.form, Form::Floor),
-                BlockingRule::WallsOnly => matches!(def.form, Form::Wall),
-            };
-            if !blocks {
-                return true;
-            }
-            !((tf.translation.x - c.x).abs() < OCCUPIED_RADIUS
-                && (tf.translation.z - c.z).abs() < OCCUPIED_RADIUS
-                && (tf.translation.y - c.y).abs() < OCCUPIED_Y)
-        })
-    })
-}
-
-/// Interior-item placement that respects the asset's pre-computed AABB:
-/// snap XZ to the cube grid based on the asset's footprint cell count, set
-/// Y so the asset's bottom rests exactly on the hit surface (terrain, wall
-/// top, or floor top). Returns the entity *centre* position.
-///
-/// The AABB used for footprint + Y is the **effective** AABB from
-/// `interior_render_params` — that's the post-stretch AABB for door
-/// categories (forced 1m wide), and the original AABB for everything else.
-/// `resolve_interior_spawns` recentres the children by `-effective.centre()`
-/// so the rendered AABB ends up centred on the entity, hence the Y formula
-/// is `scale * size.y / 2` rather than `-min.y * scale`.
-fn compute_interior_placement(
-    cursor_world: Vec3,
-    cursor_hit: Option<CursorHit>,
-    def: &crate::items::ItemDef,
-    aabb: AabbBounds,
-    placed_q: &Query<(&Transform, &PlacedBuilding), Without<BuildPreview>>,
-    registry: &ItemRegistry,
-    terrain: &Terrain,
-    noise: &WorldNoise,
-) -> (Vec3, IVec2) {
-    let scale = def.form.placement_scale();
-    let (_, _, effective) = interior_render_params(def, aabb);
-    let footprint = effective.footprint_cells(scale);
-    let bottom_offset = scale * effective.size().y * 0.5;
-
-    // Pick the surface XZ + Y. Walls / floors snap to their top; terrain hit
-    // snaps to terrain height; otherwise fall back to the cursor's ground
-    // projection. Terrain height is sampled at the *snapped* XZ so the
-    // asset doesn't bob when the cursor moves within a single cell.
-    let (raw_x, raw_z, surface_y_at) = if let Some(hit) = cursor_hit {
-        if let Ok((tf, building)) = placed_q.get(hit.entity) {
-            if let Some(hit_def) = registry.get(building.item) {
-                let hit_top = tf.translation.y + hit_def.form.placement_lift();
-                if hit.normal.y > 0.7 {
-                    (tf.translation.x, tf.translation.z, Some(hit_top))
-                } else {
-                    (hit.point.x, hit.point.z, None)
-                }
-            } else {
-                (hit.point.x, hit.point.z, None)
-            }
-        } else {
-            (hit.point.x, hit.point.z, None)
-        }
-    } else {
-        (cursor_world.x, cursor_world.z, None)
-    };
-
-    // Wall-element categories (door / window) snap *both* axes to cell
-    // boundaries (integer XZ). Z is forced to integer regardless of the
-    // asset's natural depth — even though footprint.z is usually 1 (so
-    // `snap_axis` would give a cell centre), the door / window itself only
-    // makes sense sitting on the line where two perpendicular walls would
-    // meet, so we override.
-    let force_integer_z = cube_target_width(def).is_some();
-    let snap_x = snap_axis(raw_x, footprint.x);
-    let snap_z = if force_integer_z {
-        raw_z.round()
-    } else {
-        snap_axis(raw_z, footprint.y)
-    };
-    let surface_y = surface_y_at
-        .unwrap_or_else(|| terrain.height_at_or_sample(snap_x, snap_z, noise));
-    (Vec3::new(snap_x, surface_y + bottom_offset, snap_z), footprint)
+    commands.remove_resource::<BuildMode>();
 }
 
 fn toggle_build_mode(
@@ -554,10 +180,17 @@ fn toggle_build_mode(
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
     catalog: Res<InteriorCatalog>,
-    mut history: ResMut<BuildHistory>,
+    mut history: ResMut<EditHistory>,
     cursor: Res<CursorState>,
+    mut edit_mode: ResMut<crate::world::edit::EditMode>,
+    mut crafting: ResMut<crate::crafting::CraftingState>,
 ) {
-    if cursor.keyboard_over_ui {
+    // The keyboard-over-ui gate prevents the catalog search field
+    // (decoration mode) from doubling as a mode toggle. When the crafting
+    // menu is open, egui still reports `wants_keyboard_input` for its own
+    // navigation, so we let the mode keys override in that case -- the
+    // mutual-exclusion logic below will close crafting on entry.
+    if cursor.keyboard_over_ui && !crafting.open {
         return;
     }
     if !action_state.just_pressed(&Action::ToggleBuild) {
@@ -566,20 +199,10 @@ fn toggle_build_mode(
 
     match build_mode {
         Some(mut mode) => {
-            flush_paint_batch(&mut mode, &mut history);
-            if let Some(preview) = mode.preview_entity {
-                commands.entity(preview).despawn();
-            }
-            for ghost in &mode.line_ghosts {
-                commands.entity(*ghost).despawn();
-            }
-            if let Some(highlight) = mode.remove_highlight {
-                commands.entity(highlight).despawn();
-            }
-            commands.remove_resource::<BuildMode>();
+            exit_build_mode(&mut commands, &mut mode, &mut history);
         }
         None => {
-            // Default to the first Wall variant — cubes are the build
+            // Default to the first Wall variant -- cubes are the build
             // primitive in the cube-grid model, so the player almost
             // always wants Wall ready on entry. Falls back to the first
             // placeable with stock if no walls are stocked.
@@ -610,7 +233,7 @@ fn toggle_build_mode(
                 // `inventory.count(item) > 0` left the build mode visually
                 // empty when a save loaded with depleted counts (which can
                 // happen even with INFINITE_RESOURCES if the save was
-                // created without the cheat). The ghost is informational —
+                // created without the cheat). The ghost is informational --
                 // the actual placement still gates on inventory when
                 // INFINITE_RESOURCES is off.
                 refresh_build_preview(
@@ -624,6 +247,10 @@ fn toggle_build_mode(
                     &catalog,
                 );
             }
+            // Mutual exclusion: entering build mode exits all other modes.
+            commands.remove_resource::<crate::decoration::DecorationMode>();
+            edit_mode.active = false;
+            crafting.open = false;
             commands.insert_resource(mode);
         }
     }
@@ -688,7 +315,7 @@ pub fn refresh_build_preview(
             let (child_offset, child_scale_mul) = interior
                 .aabb_local
                 .map(|aabb| {
-                    let (offset, mul, _eff) = interior_render_params(def, aabb);
+                    let (offset, mul, _eff) = crate::decoration::interior::interior_render_params(def, aabb);
                     (offset, mul)
                 })
                 .unwrap_or((Vec3::ZERO, Vec3::ONE));
@@ -946,7 +573,7 @@ fn update_preview(
     placeables: Res<PlaceableItems>,
     registry: Res<ItemRegistry>,
     inventory: Res<Inventory>,
-    placed_q: Query<(&Transform, &PlacedBuilding), Without<BuildPreview>>,
+    placed_q: Query<(&Transform, &PlacedItem), Without<BuildPreview>>,
     // Material is optional so interior previews (which use a SceneRoot or
     // an InteriorSpawnRequest with the material attached as a child) get
     // their Transform updated without us trying to tint a material they
@@ -1064,7 +691,7 @@ fn update_single_preview(
     cursor_world: Vec3,
     cursor_hit: Option<CursorHit>,
     registry: &ItemRegistry,
-    placed_q: &Query<(&Transform, &PlacedBuilding), Without<BuildPreview>>,
+    placed_q: &Query<(&Transform, &PlacedItem), Without<BuildPreview>>,
     previews_q: &mut Query<
         (&mut Transform, Option<&MeshMaterial3d<StandardMaterial>>),
         With<BuildPreview>,
@@ -1137,7 +764,7 @@ fn interior_preview_anchor(
     cursor_world: Vec3,
     cursor_hit: Option<CursorHit>,
     registry: &ItemRegistry,
-    placed_q: &Query<(&Transform, &PlacedBuilding), Without<BuildPreview>>,
+    placed_q: &Query<(&Transform, &PlacedItem), Without<BuildPreview>>,
     terrain: &Terrain,
     noise: &WorldNoise,
     catalog: &InteriorCatalog,
@@ -1146,10 +773,10 @@ fn interior_preview_anchor(
     let def = registry.get(item)?;
     let name = def.interior_name.as_ref()?;
     let aabb = catalog.aabb_for(name)?;
-    let (pos, footprint) = compute_interior_placement(
+    let (pos, footprint) = crate::decoration::interior::compute_interior_placement(
         cursor_world, cursor_hit, def, aabb, placed_q, registry, terrain, noise,
     );
-    let valid = footprint_clear(pos, footprint, placed_q, registry, blocking_rule_for(def));
+    let valid = crate::decoration::interior::footprint_clear(pos, footprint, placed_q, registry, crate::decoration::interior::blocking_rule_for(def));
     Some((pos, rotation, valid))
 }
 
@@ -1160,7 +787,7 @@ fn replace_preview_anchor(
     cursor_hit: Option<CursorHit>,
     form: Form,
     registry: &ItemRegistry,
-    placed_q: &Query<(&Transform, &PlacedBuilding), Without<BuildPreview>>,
+    placed_q: &Query<(&Transform, &PlacedItem), Without<BuildPreview>>,
 ) -> Option<(Vec3, f32, bool)> {
     let hit = cursor_hit?;
     let (wall_tf, wall_b) = placed_q.get(hit.entity).ok()?;
@@ -1181,7 +808,7 @@ fn update_line_preview(
     item: ItemId,
     cursor_world: Vec3,
     inventory: &Inventory,
-    placed_q: &Query<(&Transform, &PlacedBuilding), Without<BuildPreview>>,
+    placed_q: &Query<(&Transform, &PlacedItem), Without<BuildPreview>>,
     previews_q: &mut Query<
         (&mut Transform, Option<&MeshMaterial3d<StandardMaterial>>),
         With<BuildPreview>,
@@ -1282,12 +909,12 @@ fn place_building(
     asset_server: Res<AssetServer>,
     mut inventory: ResMut<Inventory>,
     mut inv_events: MessageWriter<InventoryChanged>,
-    placed_q: Query<(&Transform, &PlacedBuilding), Without<BuildPreview>>,
+    placed_q: Query<(&Transform, &PlacedItem), Without<BuildPreview>>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
     noise: Res<WorldNoise>,
     terrain: Res<Terrain>,
-    mut history: ResMut<BuildHistory>,
+    mut history: ResMut<EditHistory>,
     catalog: Res<InteriorCatalog>,
 ) {
     let Some(mut mode) = build_mode else { return };
@@ -1453,10 +1080,10 @@ fn place_replace(
     asset_server: &AssetServer,
     inventory: &mut Inventory,
     inv_events: &mut MessageWriter<InventoryChanged>,
-    placed_q: &Query<(&Transform, &PlacedBuilding), Without<BuildPreview>>,
+    placed_q: &Query<(&Transform, &PlacedItem), Without<BuildPreview>>,
     meshes: &mut ResMut<Assets<Mesh>>,
     materials: &mut ResMut<Assets<StandardMaterial>>,
-    history: &mut BuildHistory,
+    history: &mut EditHistory,
     catalog: &InteriorCatalog,
 ) {
     if !INFINITE_RESOURCES && inventory.count(item) == 0 {
@@ -1525,7 +1152,7 @@ fn paint_stamp(
     asset_server: &AssetServer,
     inventory: &mut Inventory,
     inv_events: &mut MessageWriter<InventoryChanged>,
-    placed_q: &Query<(&Transform, &PlacedBuilding), Without<BuildPreview>>,
+    placed_q: &Query<(&Transform, &PlacedItem), Without<BuildPreview>>,
     meshes: &mut ResMut<Assets<Mesh>>,
     materials: &mut ResMut<Assets<StandardMaterial>>,
     terrain: &Terrain,
@@ -1561,7 +1188,7 @@ fn paint_stamp(
     }
 }
 
-fn flush_paint_batch(mode: &mut BuildMode, history: &mut BuildHistory) {
+fn flush_paint_batch(mode: &mut BuildMode, history: &mut EditHistory) {
     if mode.paint_batch.is_empty() {
         return;
     }
@@ -1579,11 +1206,11 @@ fn remove_clicked_piece(
     commands: &mut Commands,
     _cursor_world: Vec3,
     cursor_hit: Option<CursorHit>,
-    placed_q: &Query<(&Transform, &PlacedBuilding), Without<BuildPreview>>,
+    placed_q: &Query<(&Transform, &PlacedItem), Without<BuildPreview>>,
     registry: &ItemRegistry,
     inventory: &mut Inventory,
     inv_events: &mut MessageWriter<InventoryChanged>,
-    history: &mut BuildHistory,
+    history: &mut EditHistory,
 ) {
     // Raycast hit is the only path with cube colliders — the camera ray
     // hits the cube directly when the player visually points at it. The
@@ -1621,12 +1248,12 @@ fn place_wall_line(
     asset_server: &AssetServer,
     inventory: &mut Inventory,
     inv_events: &mut MessageWriter<InventoryChanged>,
-    placed_q: &Query<(&Transform, &PlacedBuilding), Without<BuildPreview>>,
+    placed_q: &Query<(&Transform, &PlacedItem), Without<BuildPreview>>,
     meshes: &mut ResMut<Assets<Mesh>>,
     materials: &mut ResMut<Assets<StandardMaterial>>,
     terrain: &Terrain,
     noise: &WorldNoise,
-    history: &mut BuildHistory,
+    history: &mut EditHistory,
     catalog: &InteriorCatalog,
 ) {
     match mode.line_anchor {
@@ -1721,12 +1348,12 @@ fn place_single(
     asset_server: &AssetServer,
     inventory: &mut Inventory,
     inv_events: &mut MessageWriter<InventoryChanged>,
-    placed_q: &Query<(&Transform, &PlacedBuilding), Without<BuildPreview>>,
+    placed_q: &Query<(&Transform, &PlacedItem), Without<BuildPreview>>,
     meshes: &mut ResMut<Assets<Mesh>>,
     materials: &mut ResMut<Assets<StandardMaterial>>,
     terrain: &Terrain,
     noise: &WorldNoise,
-    history: &mut BuildHistory,
+    history: &mut EditHistory,
     catalog: &InteriorCatalog,
 ) {
     if !INFINITE_RESOURCES && inventory.count(item) == 0 {
@@ -1745,10 +1372,10 @@ fn place_single(
         };
         let Some(name) = def.interior_name.as_ref() else { return };
         let Some(aabb) = catalog.aabb_for(name) else { return };
-        let (pos, footprint) = compute_interior_placement(
+        let (pos, footprint) = crate::decoration::interior::compute_interior_placement(
             cursor_world, cursor_hit, def, aabb, placed_q, registry, terrain, noise,
         );
-        if !footprint_clear(pos, footprint, placed_q, registry, blocking_rule_for(def)) {
+        if !crate::decoration::interior::footprint_clear(pos, footprint, placed_q, registry, crate::decoration::interior::blocking_rule_for(def)) {
             // Overlap — refuse silently. Ghost is already showing red.
             return;
         }
@@ -1800,7 +1427,7 @@ fn cancel_placing(
     keyboard: Res<ButtonInput<KeyCode>>,
     mouse: Res<ButtonInput<MouseButton>>,
     build_mode: Option<ResMut<BuildMode>>,
-    mut history: ResMut<BuildHistory>,
+    mut history: ResMut<EditHistory>,
 ) {
     let cancel = keyboard.just_pressed(KeyCode::Escape)
         || mouse.just_pressed(MouseButton::Right);
@@ -1860,12 +1487,12 @@ pub fn spawn_placed_building(
         let (child_offset, child_scale_mul) = interior
             .aabb_local
             .map(|aabb| {
-                let (offset, mul, _eff) = interior_render_params(def, aabb);
+                let (offset, mul, _eff) = crate::decoration::interior::interior_render_params(def, aabb);
                 (offset, mul)
             })
             .unwrap_or((Vec3::ZERO, Vec3::ONE));
         let mut e = commands.spawn((
-            PlacedBuilding { item },
+            PlacedItem { item },
             scaled,
             // Visibility and Transform are inherited; the children spawned
             // by resolve will inherit position from this parent entity.
@@ -1883,7 +1510,7 @@ pub fn spawn_placed_building(
 
     if let Some(path) = def.form.scene_path() {
         let mut e = commands.spawn((
-            PlacedBuilding { item },
+            PlacedItem { item },
             SceneRoot(asset_server.load(path)),
             scaled,
         ));
@@ -1899,7 +1526,7 @@ pub fn spawn_placed_building(
     if matches!(def.form, Form::Door) {
         let color = def.material.base_color();
         let mut e = commands.spawn((
-            PlacedBuilding { item },
+            PlacedItem { item },
             scaled,
             Visibility::Inherited,
         ));
@@ -1910,7 +1537,7 @@ pub fn spawn_placed_building(
     if matches!(def.form, Form::Window) {
         let color = def.material.base_color();
         let mut e = commands.spawn((
-            PlacedBuilding { item },
+            PlacedItem { item },
             scaled,
             Visibility::Inherited,
         ));
@@ -1933,7 +1560,7 @@ pub fn spawn_placed_building(
         mat.emissive = LinearRgba::new(2.5, 1.6, 0.5, 1.0);
     }
     let mut e = commands.spawn((
-        PlacedBuilding { item },
+        PlacedItem { item },
         Mesh3d(meshes.add(mesh)),
         MeshMaterial3d(materials.add(mat)),
         scaled,
@@ -2055,57 +1682,3 @@ fn spawn_window_visuals(
     });
 }
 
-/// Async resolver for `InteriorSpawnRequest` — once the parent GLB is
-/// loaded and the named node's mesh asset is ready, spawn one
-/// Mesh3d+MeshMaterial3d child per primitive on the placed entity, then
-/// remove the request component. The node's local transform is ignored;
-/// the placed entity already carries the world transform from placement.
-fn resolve_interior_spawns(
-    mut commands: Commands,
-    requests: Query<(Entity, &InteriorSpawnRequest)>,
-    gltfs: Res<Assets<Gltf>>,
-    gltf_nodes: Res<Assets<GltfNode>>,
-    gltf_meshes: Res<Assets<GltfMesh>>,
-) {
-    for (entity, req) in &requests {
-        let Some(gltf) = gltfs.get(&req.gltf) else { continue };
-        let Some(node_handle) = gltf.named_nodes.get(req.node_name.as_str()) else {
-            warn!("[interior] node '{}' not in parent GLB", req.node_name);
-            commands.entity(entity).remove::<InteriorSpawnRequest>();
-            continue;
-        };
-        let Some(node) = gltf_nodes.get(node_handle) else { continue };
-        let Some(mesh_handle) = node.mesh.as_ref() else {
-            // Some nodes are bare transforms with no mesh — nothing to render.
-            commands.entity(entity).remove::<InteriorSpawnRequest>();
-            continue;
-        };
-        let Some(gltf_mesh) = gltf_meshes.get(mesh_handle) else { continue };
-
-        // Preserve the node's rotation + scale so per-item authoring
-        // intent (e.g. plant.008 has scale 0.108) carries through.
-        // Translation comes from the source scene's grid layout — we
-        // explicitly drop it. `child_offset` re-shifts so the asset's AABB
-        // centre lands at the parent transform; `child_scale_mul` adds the
-        // door-width stretch on top of the node scale.
-        let local_tf = Transform {
-            translation: req.child_offset,
-            rotation: node.transform.rotation,
-            scale: node.transform.scale * req.child_scale_mul,
-        };
-        commands.entity(entity).with_children(|parent| {
-            for prim in &gltf_mesh.primitives {
-                let mat = prim
-                    .material
-                    .clone()
-                    .unwrap_or_default();
-                parent.spawn((
-                    Mesh3d(prim.mesh.clone()),
-                    MeshMaterial3d(mat),
-                    local_tf,
-                ));
-            }
-        });
-        commands.entity(entity).remove::<InteriorSpawnRequest>();
-    }
-}

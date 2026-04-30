@@ -1,16 +1,17 @@
-//! Build-mode undo / redo.
+//! Edit-mode undo / redo.
 //!
-//! Each Place / Remove operation is recorded in `BuildHistory.undo`. Ctrl+Z
+//! Each Place / Remove operation is recorded in `EditHistory.undo`. Ctrl+Z
 //! pops from undo, applies the inverse (despawn placed cubes / respawn
 //! removed cubes), and pushes to redo. Ctrl+Shift+Z does the reverse.
-//! A new operation clears the redo stack — branching history.
+//! A new operation clears the redo stack -- branching history.
 //!
 //! Operations also surface as buttons in the build tool egui hotbar so
 //! the player can drive undo/redo without keyboard chords.
 
 use bevy::prelude::*;
 
-use super::{spawn_placed_building, BuildMode, PlacedBuilding};
+use super::placed_item::PlacedItem;
+use crate::building::{spawn_placed_building, BuildMode};
 use crate::inventory::{Inventory, InventoryChanged};
 use crate::items::{InteriorCatalog, ItemId, ItemRegistry};
 
@@ -19,18 +20,18 @@ use crate::items::{InteriorCatalog, ItemId, ItemRegistry};
 const HISTORY_CAP: usize = 50;
 
 pub fn register(app: &mut App) {
-    app.init_resource::<BuildHistory>()
+    app.init_resource::<EditHistory>()
         .add_systems(Update, undo_redo_hotkeys);
 }
 
 #[derive(Resource, Default)]
-pub struct BuildHistory {
+pub struct EditHistory {
     pub undo: Vec<BuildOp>,
     pub redo: Vec<BuildOp>,
 }
 
-impl BuildHistory {
-    /// Record a new op. Clears the redo stack — performing a fresh action
+impl EditHistory {
+    /// Record a new op. Clears the redo stack -- performing a fresh action
     /// invalidates the redo branch.
     pub fn record(&mut self, op: BuildOp) {
         self.redo.clear();
@@ -74,13 +75,15 @@ pub struct PieceRef {
     pub entity: Option<Entity>,
 }
 
-/// Ctrl+Z = undo. Ctrl+Shift+Z (or Ctrl+Y) = redo. Only fires while build
-/// mode is active so the chord doesn't collide with non-build undoables.
+/// Ctrl+Z = undo. Ctrl+Shift+Z (or Ctrl+Y) = redo. Fires while build OR
+/// decoration mode is active -- both modes share the same EditHistory
+/// stack, so undo / redo work across mode swaps.
 #[allow(clippy::too_many_arguments)]
 fn undo_redo_hotkeys(
     keyboard: Res<ButtonInput<KeyCode>>,
     build_mode: Option<Res<BuildMode>>,
-    mut history: ResMut<BuildHistory>,
+    decoration_mode: Option<Res<crate::decoration::DecorationMode>>,
+    mut history: ResMut<EditHistory>,
     mut commands: Commands,
     registry: Res<ItemRegistry>,
     asset_server: Res<AssetServer>,
@@ -88,10 +91,10 @@ fn undo_redo_hotkeys(
     mut materials: ResMut<Assets<StandardMaterial>>,
     mut inventory: ResMut<Inventory>,
     mut inv_events: MessageWriter<InventoryChanged>,
-    placed_q: Query<(Entity, &Transform, &PlacedBuilding)>,
+    placed_q: Query<(Entity, &Transform, &PlacedItem)>,
     catalog: Res<InteriorCatalog>,
 ) {
-    if build_mode.is_none() {
+    if build_mode.is_none() && decoration_mode.is_none() {
         return;
     }
     let ctrl = keyboard.pressed(KeyCode::ControlLeft)
@@ -148,10 +151,10 @@ fn undo_redo_hotkeys(
     }
 }
 
-/// Public — also called from the egui Undo button.
+/// Public -- also called from the egui Undo button.
 #[allow(clippy::too_many_arguments)]
 pub fn apply_undo(
-    history: &mut BuildHistory,
+    history: &mut EditHistory,
     commands: &mut Commands,
     registry: &ItemRegistry,
     asset_server: &AssetServer,
@@ -196,7 +199,7 @@ pub fn apply_undo(
                         p.item,
                         p.transform,
                     );
-                    // Decrement inventory only if it has stock — undo
+                    // Decrement inventory only if it has stock -- undo
                     // shouldn't go negative even with INFINITE_RESOURCES off.
                     if inventory.count(p.item) > 0 {
                         let entry = inventory.items.entry(p.item).or_insert(0);
@@ -244,10 +247,10 @@ pub fn apply_undo(
     history.redo.push(inverse);
 }
 
-/// Public — also called from the egui Redo button.
+/// Public -- also called from the egui Redo button.
 #[allow(clippy::too_many_arguments)]
 pub fn apply_redo(
-    history: &mut BuildHistory,
+    history: &mut EditHistory,
     commands: &mut Commands,
     registry: &ItemRegistry,
     asset_server: &AssetServer,
@@ -255,7 +258,7 @@ pub fn apply_redo(
     materials: &mut ResMut<Assets<StandardMaterial>>,
     inventory: &mut Inventory,
     inv_events: &mut MessageWriter<InventoryChanged>,
-    placed_q: &Query<(Entity, &Transform, &PlacedBuilding)>,
+    placed_q: &Query<(Entity, &Transform, &PlacedItem)>,
     catalog: &InteriorCatalog,
 ) {
     let Some(op) = history.redo.pop() else { return };
