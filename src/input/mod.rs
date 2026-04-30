@@ -274,6 +274,7 @@ fn compute_cursor_world(
     camera_query: Query<(&Camera, &GlobalTransform), With<GameCamera>>,
     rapier: ReadRapierContext,
     mut cursor: ResMut<CursorState>,
+    fades: Res<crate::camera::occluder_fade::OccluderFades>,
 ) {
     cursor.cursor_world = None;
     cursor.cursor_hit = None;
@@ -294,9 +295,15 @@ fn compute_cursor_world(
 
     // Rapier raycast: returns the closest collider the camera ray hits.
     // `solid=true` so rays starting inside a collider report time_of_impact=0.
+    // The predicate skips any entity currently being faded by
+    // `OccluderFades` — that's the camera-line occlusion *and* the indoor
+    // ceiling reveal — so when the player is inside a building the cursor
+    // lands on the floor / furniture instead of the see-through roof.
     if let Ok(ctx) = rapier.single() {
+        let predicate = |entity: Entity| !fades.is_faded(entity);
+        let filter = QueryFilter::default().predicate(&predicate);
         if let Some((entity, hit)) =
-            ctx.cast_ray_and_get_normal(ray.origin, *ray.direction, 1000.0, true, QueryFilter::default())
+            ctx.cast_ray_and_get_normal(ray.origin, *ray.direction, 1000.0, true, filter)
         {
             cursor.cursor_hit = Some(CursorHit {
                 entity,

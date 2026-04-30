@@ -2,3 +2,5 @@ savegame.json
 savegame.backup.json
 .claude/scheduled_tasks.lock
 target/
+.DS_Store
+**/.DS_Store

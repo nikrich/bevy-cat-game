@@ -7,7 +7,7 @@ use crate::input::{Action, CursorState};
 use crate::inventory::{Inventory, InventoryChanged};
 use crate::items::{Form, ItemId, ItemRegistry, Material};
 use crate::player::Player;
-use crate::world::props::{Prop, PropKind};
+use crate::world::props::{GatheredCells, Prop, PropCell, PropKind};
 
 pub struct GatheringPlugin;
 
@@ -136,10 +136,11 @@ const GATHER_ANIM_DURATION: f32 = 0.3;
 
 fn animate_gathering(
     mut commands: Commands,
-    mut gathering: Query<(Entity, &mut Gathering, &mut Transform)>,
+    mut gathering: Query<(Entity, &mut Gathering, &mut Transform, Option<&PropCell>)>,
     time: Res<Time>,
+    mut gathered: ResMut<GatheredCells>,
 ) {
-    for (entity, mut gather, mut transform) in &mut gathering {
+    for (entity, mut gather, mut transform, cell) in &mut gathering {
         gather.timer += time.delta_secs();
 
         let progress = (gather.timer / GATHER_ANIM_DURATION).min(1.0);
@@ -148,6 +149,11 @@ fn animate_gathering(
         transform.translation.y += time.delta_secs() * 2.0;
 
         if progress >= 1.0 {
+            // Mark this cell as gathered before despawning so chunk reloads
+            // (and walking back into the same chunk) don't regrow the prop.
+            if let Some(c) = cell {
+                gathered.insert(*c);
+            }
             commands.entity(entity).despawn();
         }
     }

@@ -13,6 +13,7 @@ use bevy::prelude::*;
 use std::collections::HashMap;
 
 use crate::building::PlacedBuilding;
+use crate::items::{Form, ItemRegistry, ItemTags};
 use crate::player::Player;
 use crate::world::props::{Prop, PropKind};
 
@@ -31,9 +32,54 @@ const OCCLUDE_ALPHA: f32 = 0.18;
 /// opaque. We push tree-shaped occluders to 0.05 so the cat clearly shows
 /// through.
 const OCCLUDE_ALPHA_FOLIAGE: f32 = 0.05;
+/// Default alpha for the indoor reveal pass. Fully transparent so the
+/// roof / upper-storey contents disappear entirely when the cat is
+/// indoors — reads cleanest at the default iso angle. The player can
+/// override via the build-mode UI (`IndoorRevealSettings.alpha`).
+const DEFAULT_INDOOR_REVEAL_ALPHA: f32 = 0.0;
+
+/// Player-tweakable settings for the indoor reveal effect. Edited from
+/// the build-mode tool palette: a toggle to disable the reveal entirely
+/// (so the player can see the building exterior while building) and a
+/// slider for the alpha used when ceiling pieces fade.
+#[derive(Resource)]
+pub struct IndoorRevealSettings {
+    pub enabled: bool,
+    pub alpha: f32,
+}
+
+impl Default for IndoorRevealSettings {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            alpha: DEFAULT_INDOOR_REVEAL_ALPHA,
+        }
+    }
+}
 /// 1/seconds: at 6.0 the fade reaches near-target in ~0.5s, smoothing the
 /// transition without feeling laggy.
 const FADE_SPEED: f32 = 6.0;
+/// XZ radius around the player to scan for "is anything overhead?". Generous
+/// enough to detect a roof when the cat is near a wall but not so wide that
+/// the cat triggers the indoor reveal while standing next to a building.
+const INDOOR_PROBE_RADIUS: f32 = 0.7;
+/// Y window above the cat's centre that counts as "overhead". `+0.3` skips
+/// pieces at the same level (so a wall the cat is brushing against doesn't
+/// count). The upper bound is large enough to catch the roof of a tall
+/// multi-storey hall — anything reasonably above the player should
+/// register, since stray floating cubes 30m up are unlikely.
+const INDOOR_OVERHEAD_MIN_Y: f32 = 0.3;
+const INDOOR_OVERHEAD_MAX_Y: f32 = 30.0;
+/// XZ radius around the player within which overhead cubes fade once the
+/// player is detected as indoors. Sized for a full 20×20 hall so an
+/// entire roof reveals at once even when the player is at one corner;
+/// keeping it bounded (vs. "fade everything above") means a neighbour
+/// building 25m away doesn't go translucent when you step inside yours.
+const INDOOR_REVEAL_RADIUS: f32 = 14.0;
+/// Minimum Y offset above the player for a cube to qualify as a "ceiling"
+/// piece for the indoor reveal. Below this, cubes are walls — those fade
+/// via the existing camera-line rule.
+const INDOOR_CEILING_MIN_OFFSET: f32 = 0.6;
 
 /// Opt-out marker for occluders that should never fade -- e.g. floor and
 /// roof tiles the cat stands on top of, where fading them would be confusing.
@@ -59,8 +105,19 @@ pub struct OccluderFades {
     states: HashMap<Entity, FadeState>,
 }
 
+impl OccluderFades {
+    /// Whether `entity` is currently fading (or fully faded) for any reason
+    /// — camera-line occlusion or the indoor ceiling reveal. Used by the
+    /// placement raycast to skip see-through walls so the cursor lands on
+    /// the floor / interior, not on the wall the player is looking past.
+    pub fn is_faded(&self, entity: Entity) -> bool {
+        self.states.contains_key(&entity)
+    }
+}
+
 pub fn register(app: &mut App) {
     app.init_resource::<OccluderFades>()
+        .init_resource::<IndoorRevealSettings>()
         .add_systems(Update, fade_camera_occluders);
 }
 
@@ -69,13 +126,15 @@ fn fade_camera_occluders(
     cameras: Query<&GlobalTransform, With<GameCamera>>,
     players: Query<&GlobalTransform, With<Player>>,
     occluders: Query<
-        (Entity, &GlobalTransform, Option<&PropKind>),
+        (Entity, &GlobalTransform, Option<&PropKind>, Option<&PlacedBuilding>),
         (Or<(With<Prop>, With<PlacedBuilding>)>, Without<NoOcclude>),
     >,
+    registry: Res<ItemRegistry>,
     children_q: Query<&Children>,
     mut mat_q: Query<&mut MeshMaterial3d<StandardMaterial>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
     mut fades: ResMut<OccluderFades>,
+    indoor_settings: Res<IndoorRevealSettings>,
 ) {
     let Ok(cam_tf) = cameras.single() else { return };
     let Ok(player_tf) = players.single() else { return };
@@ -90,12 +149,59 @@ fn fade_camera_occluders(
     let dir = to_player / dist;
     let dt_lerp = (FADE_SPEED * time.delta_secs()).min(1.0);
 
+    // Indoor detection: is there a placed building cube directly above the
+    // player? If so, fade the whole ceiling layer + the camera-side walls
+    // so the player can see the floor. Only structural pieces (walls,
+    // doors, windows) trigger the indoor flag — a chair on a shelf above
+    // shouldn't make the cat "indoors". The whole reveal can be disabled
+    // by the player via the build-mode toggle.
+    let indoor = indoor_settings.enabled
+        && occluders.iter().any(|(_, gt, _, building)| {
+            let Some(b) = building else { return false };
+            let Some(def) = registry.get(b.item) else { return false };
+            if !def.tags.contains(ItemTags::STRUCTURAL) {
+                return false;
+            }
+            let pos = gt.translation();
+            let dx = pos.x - player_pos.x;
+            let dz = pos.z - player_pos.z;
+            let dy = pos.y - player_pos.y;
+            dx * dx + dz * dz < INDOOR_PROBE_RADIUS * INDOOR_PROBE_RADIUS
+                && dy > INDOOR_OVERHEAD_MIN_Y
+                && dy < INDOOR_OVERHEAD_MAX_Y
+        });
+
     // Snapshot occluder positions, their target fade, and per-occluder
     // alpha (foliage goes deeper) for this frame so the borrow on
     // `occluders` releases before we touch material assets.
     let targets: Vec<(Entity, f32, f32)> = occluders
         .iter()
-        .map(|(entity, gt, kind)| {
+        .map(|(entity, gt, kind, building)| {
+            let is_building = building.is_some();
+            // Camera-line fade (the "I'm behind a tree / wall" case) is
+            // restricted to props + structural building pieces. Furniture
+            // and decorations stay solid even when between camera and
+            // player — high-poly furniture looks busy at low alpha and the
+            // player rarely needs to see *through* a chair to spot the
+            // cat. Indoor reveal still kicks in for furniture above the
+            // player when they go up a story.
+            let allow_camera_line = match building {
+                None => true, // Prop — keep existing behaviour.
+                Some(b) => registry
+                    .get(b.item)
+                    .map(|d| {
+                        // Structural pieces fade for camera-line occlusion
+                        // *except* floors — the floor under the player
+                        // would always pass the camera-line test, fading
+                        // the ground out from under them. Floors still
+                        // fade via the indoor ceiling pass when they're
+                        // above the player.
+                        d.tags.contains(ItemTags::STRUCTURAL)
+                            && !matches!(d.form, Form::Floor)
+                    })
+                    .unwrap_or(false),
+            };
+
             // Lift the test point to the canopy/centre for tall props so
             // their actual visual mass is what we compare against the
             // camera-to-player line, not the trunk base on the ground.
@@ -109,12 +215,39 @@ fn fade_camera_occluders(
             let to_obj = probe - cam_pos;
             let along = to_obj.dot(dir);
             let perp = (to_obj - dir * along).length();
-            let occluding = along > 0.0 && along < dist && perp < OCCLUDE_RADIUS;
+            let camera_line_occluding = allow_camera_line
+                && along > 0.0
+                && along < dist
+                && perp < OCCLUDE_RADIUS;
+
+            // Indoor reveal: when the player is under a roof, additionally
+            // fade any building piece whose centre Y is above the player
+            // (i.e. ceiling pieces or upper-storey furniture) within a
+            // generous room radius. Walls at or below player level still
+            // fade via the camera-line rule above; we don't double-fade.
+            let pos = gt.translation();
+            let dx = pos.x - player_pos.x;
+            let dz = pos.z - player_pos.z;
+            let dy = pos.y - player_pos.y;
+            let xz_dist_sq = dx * dx + dz * dz;
+            let indoor_ceiling_occluding = indoor
+                && is_building
+                && dy > INDOOR_CEILING_MIN_OFFSET
+                && xz_dist_sq < INDOOR_REVEAL_RADIUS * INDOOR_REVEAL_RADIUS;
+
+            let occluding = camera_line_occluding || indoor_ceiling_occluding;
             let target = if occluding { 1.0 } else { 0.0 };
+            // Indoor reveal goes deeper than the camera-line fade so the
+            // floor reads clearly. Foliage stays on its own deeper alpha
+            // because four-layer canopies need it to feel see-through.
             let alpha = match kind {
                 Some(PropKind::Tree | PropKind::PineTree | PropKind::Bush) => {
                     OCCLUDE_ALPHA_FOLIAGE
                 }
+                _ if indoor_ceiling_occluding && !camera_line_occluding => {
+                    indoor_settings.alpha
+                }
+                _ if indoor && is_building => indoor_settings.alpha,
                 _ => OCCLUDE_ALPHA,
             };
             (entity, target, alpha)
@@ -149,6 +282,10 @@ fn fade_camera_occluders(
         }
 
         let state = fades.states.get_mut(&root).unwrap();
+        // Refresh `full_alpha` from the latest target — the player can
+        // tweak `IndoorRevealSettings.alpha` mid-fade and we want the live
+        // value, not whatever was in effect when the fade started.
+        state.full_alpha = full_alpha;
         state.progress += (target - state.progress) * dt_lerp;
         state.progress = state.progress.clamp(0.0, 1.0);
 

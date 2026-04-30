@@ -55,6 +55,23 @@ pub struct PropCell {
     pub lz: u8,
 }
 
+/// Set of cells where the player has gathered a prop. `try_spawn_cell_prop`
+/// skips any cell in this set so chunks reloading after save / move don't
+/// regrow the gathered tree / rock / mushroom. Persisted in `SaveData`.
+#[derive(Resource, Default)]
+pub struct GatheredCells {
+    pub cells: std::collections::HashSet<(i32, i32, u8, u8)>,
+}
+
+impl GatheredCells {
+    pub fn contains(&self, cell: &PropCell) -> bool {
+        self.cells.contains(&(cell.cx, cell.cz, cell.lx, cell.lz))
+    }
+    pub fn insert(&mut self, cell: PropCell) {
+        self.cells.insert((cell.cx, cell.cz, cell.lx, cell.lz));
+    }
+}
+
 /// Pop-in animation tag for props that were spawned by the Paint brush
 /// respawn pass. Initial chunk-load props skip this so the world doesn't
 /// pop in every time you walk; only paint-driven appearances pop.
@@ -366,6 +383,7 @@ pub fn spawn_chunk_props(
     noise: Res<WorldNoise>,
     terrain: Res<Terrain>,
     assets: Res<PropAssets>,
+    gathered: Res<GatheredCells>,
     mut chunk_events: MessageReader<ChunkLoaded>,
 ) {
     let events: Vec<_> = chunk_events.read().collect();
@@ -389,6 +407,10 @@ pub fn spawn_chunk_props(
                 let biome = terrain
                     .vertex_biome(wx, wz)
                     .unwrap_or_else(|| noise.sample(wx as f64, wz as f64).biome);
+                if gathered.cells.contains(&(event.x, event.z, lx as u8, lz as u8)) {
+                    // Player has already collected this cell — leave it empty.
+                    continue;
+                }
                 try_spawn_cell_prop(
                     &mut commands,
                     &asset_server,

@@ -27,13 +27,15 @@ pub fn attach_for_form(entity: &mut EntityCommands, form: Form, transform: &Tran
     match form {
         Form::Floor => {
             // 1.0 x 0.12 x 1.0 cuboid centred on transform.y. Cat stands on
-            // top, so it's never an occluder. PropCollision keeps the
-            // existing examine/lookup code working.
+            // top. We deliberately *don't* add `NoOcclude` here so a floor
+            // above the player (i.e. the upper-storey slab acting as a
+            // ceiling) gets faded by the indoor reveal pass. The camera-
+            // line fade in `occluder_fade` skips Form::Floor explicitly so
+            // the floor under the player never goes translucent.
             entity.insert(PropCollision {
                 top_y: pos.y + 0.06,
                 radius: 0.71,
             });
-            entity.insert(NoOcclude);
             entity.insert((Collider::cuboid(0.5, 0.06, 0.5), RigidBody::Fixed));
         }
         Form::Roof => {

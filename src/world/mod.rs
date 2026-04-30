@@ -19,6 +19,7 @@ impl Plugin for WorldPlugin {
             .init_resource::<terrain::Terrain>()
             .init_resource::<terrain::TerrainMaterial>()
             .init_resource::<props::PropAssets>()
+            .init_resource::<props::GatheredCells>()
             .init_resource::<water::WaterAssets>()
             .init_resource::<daynight::WorldTime>()
             .add_message::<chunks::ChunkLoaded>()

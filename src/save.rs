@@ -12,6 +12,7 @@ use crate::memory::{CellMemory, Journal, JournalEntry, WorldMemory};
 use crate::player::Player;
 use crate::world::biome::Biome;
 use crate::world::chunks::ChunkManager;
+use crate::world::props::GatheredCells;
 use crate::world::terrain::Terrain;
 
 pub struct SavePlugin;
@@ -105,6 +106,19 @@ struct SaveData {
     /// PCG. Same flat-list shape as `terrain_edits` for the same reason.
     #[serde(default)]
     biome_edits: Vec<ChunkBiomeEditsSave>,
+    /// Cells where the player has gathered a prop. Without this, chunks
+    /// reloaded after save (or after walking out of range and back) would
+    /// regrow every tree / rock / mushroom from the deterministic PCG.
+    #[serde(default)]
+    gathered_cells: Vec<GatheredCellSave>,
+}
+
+#[derive(Serialize, Deserialize)]
+struct GatheredCellSave {
+    cx: i32,
+    cz: i32,
+    lx: u8,
+    lz: u8,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -171,6 +185,7 @@ fn auto_save(
     journal: Res<Journal>,
     chunks: Res<ChunkManager>,
     terrain: Res<Terrain>,
+    gathered: Res<GatheredCells>,
     player_query: Query<&Transform, With<Player>>,
     buildings: Query<(&PlacedBuilding, &Transform)>,
     action_state: Res<leafwing_input_manager::prelude::ActionState<crate::input::Action>>,
@@ -246,6 +261,12 @@ fn auto_save(
         })
         .collect();
 
+    let gathered_cells_vec: Vec<GatheredCellSave> = gathered
+        .cells
+        .iter()
+        .map(|&(cx, cz, lx, lz)| GatheredCellSave { cx, cz, lx, lz })
+        .collect();
+
     let data = SaveData {
         player: [
             player_tf.translation.x,
@@ -260,6 +281,7 @@ fn auto_save(
         journal_next_id: journal.next_id,
         terrain_edits,
         biome_edits,
+        gathered_cells: gathered_cells_vec,
     };
 
     let path = save_path();
@@ -295,6 +317,7 @@ fn load_game(
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
     catalog: Res<crate::items::InteriorCatalog>,
+    mut gathered: ResMut<GatheredCells>,
 ) {
     let path = save_path();
     let Ok(data) = fs::read_to_string(&path) else {
@@ -349,6 +372,15 @@ fn load_game(
                 .biome_edits
                 .insert((chunk_save.cx, chunk_save.cz), vmap);
         }
+    }
+
+    // Gathered cells must be restored before any chunks load — chunks are
+    // queued in a later Update tick, and `spawn_chunk_props` reads this
+    // resource to skip cells the player already harvested.
+    for cell in save.gathered_cells {
+        gathered
+            .cells
+            .insert((cell.cx, cell.cz, cell.lx, cell.lz));
     }
 
     for (key, count) in save.inventory {

@@ -104,7 +104,13 @@ const WALL_LENGTH: f32 = 1.0;
 /// placement so re-running a line over an existing wall — including the
 /// shared corner cell of two perpendicular line segments — doesn't overlap.
 const OCCUPIED_RADIUS: f32 = 0.4;
-const OCCUPIED_Y: f32 = 0.6;
+/// Y window for "two pieces overlap". Tuned so:
+///   - two cubes stacked vertically (Δy = 1.0) don't flag each other,
+///   - a floor (lift 0.06) on top of a 1m wall (centre y = 0.5, Δy = 0.56)
+///     doesn't see the wall as an occupant — that lets the player paint
+///     2nd-storey floors over a stacked wall layer,
+///   - two pieces at the same Y still conflict.
+const OCCUPIED_Y: f32 = 0.5;
 
 pub fn init_placeable_items(
     registry: Res<ItemRegistry>,
@@ -419,15 +425,54 @@ fn footprint_cell_centres(centre: Vec3, cells: IVec2) -> Vec<Vec3> {
     out
 }
 
-/// True if every cell in the footprint at `centre` is clear of placed pieces.
+/// What an in-progress interior placement counts as "in the way".
+#[derive(Clone, Copy)]
+enum BlockingRule {
+    /// Default for furniture / props / decorations: every placed piece
+    /// blocks except floors (which are explicit "stand-on-top" surfaces).
+    AnyExceptFloor,
+    /// Carpets only: walls are the only blockers. Floors, other carpets,
+    /// chairs, tables, lamps — all fine to overlap (a carpet visually
+    /// goes under the items in the room).
+    WallsOnly,
+}
+
+fn blocking_rule_for(def: &crate::items::ItemDef) -> BlockingRule {
+    if matches!(def.interior_category.as_deref(), Some("carpet")) {
+        BlockingRule::WallsOnly
+    } else {
+        BlockingRule::AnyExceptFloor
+    }
+}
+
+/// True if every cell in the footprint at `centre` is clear of placed
+/// pieces under the given `rule`. See [`BlockingRule`] for which forms
+/// count as blockers.
 fn footprint_clear(
     centre: Vec3,
     cells: IVec2,
     placed_q: &Query<(&Transform, &PlacedBuilding), Without<BuildPreview>>,
+    registry: &ItemRegistry,
+    rule: BlockingRule,
 ) -> bool {
-    footprint_cell_centres(centre, cells)
-        .into_iter()
-        .all(|c| !is_position_occupied(c, placed_q))
+    footprint_cell_centres(centre, cells).into_iter().all(|c| {
+        placed_q.iter().all(|(tf, b)| {
+            let def = match registry.get(b.item) {
+                Some(d) => d,
+                None => return true,
+            };
+            let blocks = match rule {
+                BlockingRule::AnyExceptFloor => !matches!(def.form, Form::Floor),
+                BlockingRule::WallsOnly => matches!(def.form, Form::Wall),
+            };
+            if !blocks {
+                return true;
+            }
+            !((tf.translation.x - c.x).abs() < OCCUPIED_RADIUS
+                && (tf.translation.z - c.z).abs() < OCCUPIED_RADIUS
+                && (tf.translation.y - c.y).abs() < OCCUPIED_Y)
+        })
+    })
 }
 
 /// Interior-item placement that respects the asset's pre-computed AABB:
@@ -1083,7 +1128,7 @@ fn interior_preview_anchor(
     let (pos, footprint) = compute_interior_placement(
         cursor_world, cursor_hit, def, aabb, placed_q, registry, terrain, noise,
     );
-    let valid = footprint_clear(pos, footprint, placed_q);
+    let valid = footprint_clear(pos, footprint, placed_q, registry, blocking_rule_for(def));
     Some((pos, rotation, valid))
 }
 
@@ -1682,7 +1727,7 @@ fn place_single(
         let (pos, footprint) = compute_interior_placement(
             cursor_world, cursor_hit, def, aabb, placed_q, registry, terrain, noise,
         );
-        if !footprint_clear(pos, footprint, placed_q) {
+        if !footprint_clear(pos, footprint, placed_q, registry, blocking_rule_for(def)) {
             // Overlap — refuse silently. Ghost is already showing red.
             return;
         }
