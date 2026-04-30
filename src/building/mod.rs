@@ -185,7 +185,12 @@ fn toggle_build_mode(
     mut edit_mode: ResMut<crate::world::edit::EditMode>,
     mut crafting: ResMut<crate::crafting::CraftingState>,
 ) {
-    if cursor.keyboard_over_ui {
+    // The keyboard-over-ui gate prevents the catalog search field
+    // (decoration mode) from doubling as a mode toggle. When the crafting
+    // menu is open, egui still reports `wants_keyboard_input` for its own
+    // navigation, so we let the mode keys override in that case -- the
+    // mutual-exclusion logic below will close crafting on entry.
+    if cursor.keyboard_over_ui && !crafting.open {
         return;
     }
     if !action_state.just_pressed(&Action::ToggleBuild) {

@@ -50,7 +50,10 @@ fn toggle_decoration_mode(
     mut edit_mode: ResMut<crate::world::edit::EditMode>,
     mut crafting: ResMut<crate::crafting::CraftingState>,
 ) {
-    if cursor.keyboard_over_ui {
+    // Allow N to override when crafting is open -- egui claims keyboard
+    // for its own navigation while the menu shows, but the mode key should
+    // still flip modes (mutual exclusion below closes crafting on entry).
+    if cursor.keyboard_over_ui && !crafting.open {
         return;
     }
     if !action_state.just_pressed(&Action::ToggleDecoration) {
