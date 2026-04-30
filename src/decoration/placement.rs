@@ -247,16 +247,44 @@ fn ghost_face_emissive(blocked: bool) -> LinearRgba {
 
 /// Decide whether the ghost at `pos` would overlap an existing placed
 /// piece in a way that should block placement. Walls / doors / windows /
-/// roofs (anything STRUCTURAL except floors) block. Floors and carpets
-/// don't block -- you place on top of those. Anything else (furniture,
-/// other decorations) is allowed to overlap for now; carpets-under-table
-/// and lamp-on-table are common and intentional.
+/// roofs (anything STRUCTURAL except floors) block under two conditions:
+///
+/// 1. **Center proximity**: the ghost center sits inside the wall's
+///    bounding cube (within 0.45m XZ + 0.6m Y of the wall center).
+/// 2. **Stacked on top**: the cursor is pointing at a structural piece's
+///    top face. Even if the ghost center clears the wall AABB, sitting
+///    a chair on top of a wall is visually nonsense -- the ghost extends
+///    past the wall edges and floats over the room below. Catching this
+///    explicitly via the cursor hit avoids needing a full footprint
+///    support check.
+///
+/// Floors and carpets don't block -- you place on top of those. Other
+/// furniture / decorations are allowed to overlap (carpet-under-table,
+/// candle-on-chest are common and intentional).
 fn is_decoration_blocked(
     pos: Vec3,
+    cursor_hit: Option<CursorHit>,
     placed_q: &Query<(&Transform, &PlacedItem), Without<DecorationPreview>>,
     registry: &ItemRegistry,
 ) -> bool {
     use crate::items::ItemTags;
+
+    // Stacked-on-structural check.
+    if let Some(hit) = cursor_hit {
+        if hit.normal.y > 0.7 {
+            if let Ok((_, item)) = placed_q.get(hit.entity) {
+                if let Some(def) = registry.get(item.item) {
+                    if def.tags.contains(ItemTags::STRUCTURAL)
+                        && !matches!(def.form, Form::Floor)
+                    {
+                        return true;
+                    }
+                }
+            }
+        }
+    }
+
+    // Center-proximity check.
     placed_q.iter().any(|(tf, item)| {
         let Some(def) = registry.get(item.item) else { return false };
         if matches!(def.form, Form::Floor) {
@@ -312,7 +340,7 @@ pub fn update_preview(
         &noise,
         &catalog,
     );
-    let blocked = is_decoration_blocked(pos, &placed_q, &registry);
+    let blocked = is_decoration_blocked(pos, cursor.cursor_hit, &placed_q, &registry);
 
     // Reuse the existing ghost only when it represents the same item. If
     // the player picked a different piece in the catalog (`item_id`
