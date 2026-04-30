@@ -322,8 +322,10 @@ pub fn update_preview(
             0.02,
         )));
         let face_mat = materials.add(StandardMaterial {
-            base_color: Color::srgb(1.0, 0.55, 0.15),
-            emissive: LinearRgba::from(Color::srgb(1.4, 0.7, 0.2)),
+            // Vivid lime green, deliberately oversaturated + emissive so
+            // the indicator pops against the muted translucent body.
+            base_color: Color::srgb(0.55, 1.0, 0.0),
+            emissive: LinearRgba::from(Color::srgb(0.9, 2.0, 0.2)),
             unlit: true,
             ..default()
         });
