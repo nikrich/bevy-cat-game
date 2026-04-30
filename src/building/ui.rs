@@ -134,7 +134,7 @@ fn draw_build_tool_hotbar(
                 // Indoor reveal controls — let the player toggle the
                 // ceiling-fade effect off (e.g. while admiring the
                 // exterior) and tweak how see-through it is when on.
-                ui.checkbox(&mut indoor_settings.enabled, "X-ray");
+                ui.checkbox(&mut indoor_settings.enabled, "X-ray (X)");
                 ui.add_enabled(
                     indoor_settings.enabled,
                     egui::Slider::new(&mut indoor_settings.alpha, 0.0..=1.0)

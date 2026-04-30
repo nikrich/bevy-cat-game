@@ -275,6 +275,8 @@ fn compute_cursor_world(
     rapier: ReadRapierContext,
     mut cursor: ResMut<CursorState>,
     fades: Res<crate::camera::occluder_fade::OccluderFades>,
+    placed_q: Query<&crate::building::PlacedBuilding>,
+    registry: Res<crate::items::ItemRegistry>,
 ) {
     cursor.cursor_world = None;
     cursor.cursor_hit = None;
@@ -295,12 +297,25 @@ fn compute_cursor_world(
 
     // Rapier raycast: returns the closest collider the camera ray hits.
     // `solid=true` so rays starting inside a collider report time_of_impact=0.
-    // The predicate skips any entity currently being faded by
-    // `OccluderFades` — that's the camera-line occlusion *and* the indoor
-    // ceiling reveal — so when the player is inside a building the cursor
-    // lands on the floor / furniture instead of the see-through roof.
+    // The predicate skips faded *non-floor* entities — camera-line walls
+    // and indoor-reveal ceilings should not block the cursor, but floors
+    // always need to be hittable (the player stands and places on them
+    // even when they happen to be part of a fade transition).
     if let Ok(ctx) = rapier.single() {
-        let predicate = |entity: Entity| !fades.is_faded(entity);
+        let predicate = |entity: Entity| {
+            if !fades.is_faded(entity) {
+                return true;
+            }
+            // Faded floor → still allow the cursor to land on it.
+            if let Ok(b) = placed_q.get(entity) {
+                if let Some(def) = registry.get(b.item) {
+                    if matches!(def.form, crate::items::Form::Floor) {
+                        return true;
+                    }
+                }
+            }
+            false
+        };
         let filter = QueryFilter::default().predicate(&predicate);
         if let Some((entity, hit)) =
             ctx.cast_ray_and_get_normal(ray.origin, *ray.direction, 1000.0, true, filter)

@@ -220,18 +220,27 @@ fn fade_camera_occluders(
                 && along < dist
                 && perp < OCCLUDE_RADIUS;
 
-            // Indoor reveal: when the player is under a roof, additionally
-            // fade any building piece whose centre Y is above the player
-            // (i.e. ceiling pieces or upper-storey furniture) within a
-            // generous room radius. Walls at or below player level still
-            // fade via the camera-line rule above; we don't double-fade.
+            // Indoor reveal: when the player is under a roof, fade any
+            // STRUCTURAL piece (wall / floor / door / window) above the
+            // player's centre within a room radius. Furniture is excluded
+            // from this pass — items saved at varying Y from past
+            // sessions kept landing in the "above" window and going
+            // invisible. Walls at or below player level still fade via
+            // the camera-line rule above; we don't double-fade.
+            let is_structural = match building {
+                Some(b) => registry
+                    .get(b.item)
+                    .map(|d| d.tags.contains(ItemTags::STRUCTURAL))
+                    .unwrap_or(false),
+                None => false,
+            };
             let pos = gt.translation();
             let dx = pos.x - player_pos.x;
             let dz = pos.z - player_pos.z;
             let dy = pos.y - player_pos.y;
             let xz_dist_sq = dx * dx + dz * dz;
             let indoor_ceiling_occluding = indoor
-                && is_building
+                && is_structural
                 && dy > INDOOR_CEILING_MIN_OFFSET
                 && xz_dist_sq < INDOOR_REVEAL_RADIUS * INDOOR_REVEAL_RADIUS;
 
@@ -247,7 +256,7 @@ fn fade_camera_occluders(
                 _ if indoor_ceiling_occluding && !camera_line_occluding => {
                     indoor_settings.alpha
                 }
-                _ if indoor && is_building => indoor_settings.alpha,
+                _ if indoor && is_structural => indoor_settings.alpha,
                 _ => OCCLUDE_ALPHA,
             };
             (entity, target, alpha)

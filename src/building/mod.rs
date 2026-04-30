@@ -37,6 +37,7 @@ impl Plugin for BuildingPlugin {
                     select_build_tool,
                     select_build_item,
                     cycle_build_item,
+                    toggle_xray,
                     update_preview,
                     place_building,
                     resolve_interior_spawns,
@@ -730,6 +731,26 @@ pub fn refresh_build_preview(
             .id()
     };
     mode.preview_entity = Some(preview);
+}
+
+/// `X` toggles the indoor x-ray reveal while build mode is active. We read
+/// the raw key (not a leafwing action) because `X` is already bound to
+/// `Action::Examine` for the cat-verbs system; intercepting it here only
+/// when build mode is on keeps the two uses from clashing. Suppressed when
+/// egui has keyboard focus so typing in the catalog search bar doesn't
+/// accidentally toggle the reveal.
+fn toggle_xray(
+    keyboard: Res<ButtonInput<KeyCode>>,
+    build_mode: Option<Res<BuildMode>>,
+    cursor: Res<CursorState>,
+    mut indoor_settings: ResMut<crate::camera::occluder_fade::IndoorRevealSettings>,
+) {
+    if build_mode.is_none() || cursor.keyboard_over_ui {
+        return;
+    }
+    if keyboard.just_pressed(KeyCode::KeyX) {
+        indoor_settings.enabled = !indoor_settings.enabled;
+    }
 }
 
 /// Number-row hotkeys swap the active build tool while in build mode.
