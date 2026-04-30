@@ -16,6 +16,7 @@ pub struct DecorationPlugin;
 
 impl Plugin for DecorationPlugin {
     fn build(&self, app: &mut App) {
+        app.init_resource::<move_tool::MoveCarry>();
         app.add_systems(
             Update,
             (
@@ -24,6 +25,12 @@ impl Plugin for DecorationPlugin {
                 placement::update_preview,
                 place_tool::place_decoration,
                 remove_tool::remove_decoration,
+                (
+                    move_tool::drop_decoration,
+                    move_tool::pickup_decoration,
+                    move_tool::carry_follow_cursor,
+                )
+                    .chain(),
                 hotbar_ui::select_tool_hotkeys,
             ),
         );
@@ -61,6 +68,8 @@ fn toggle_decoration_mode(
     mut history: ResMut<crate::edit::EditHistory>,
     mut edit_mode: ResMut<crate::world::edit::EditMode>,
     mut crafting: ResMut<crate::crafting::CraftingState>,
+    placeables: Res<crate::building::PlaceableItems>,
+    registry: Res<crate::items::ItemRegistry>,
 ) {
     // Allow N to override when crafting is open -- egui claims keyboard
     // for its own navigation while the menu shows, but the mode key should
@@ -80,7 +89,33 @@ fn toggle_decoration_mode(
             }
             edit_mode.active = false;
             crafting.open = false;
-            commands.insert_resource(DecorationMode::default());
+            let selected = first_decoration_index(&placeables, &registry);
+            commands.insert_resource(DecorationMode {
+                selected,
+                ..Default::default()
+            });
         }
     }
+}
+
+/// Find the index (in `PlaceableItems`) of the first item tagged DECORATION
+/// or FURNITURE. Falls back to 0 if no such item exists.
+fn first_decoration_index(
+    placeables: &crate::building::PlaceableItems,
+    registry: &crate::items::ItemRegistry,
+) -> usize {
+    use crate::items::ItemTags;
+    placeables
+        .0
+        .iter()
+        .position(|id| {
+            registry
+                .get(*id)
+                .map(|d| {
+                    d.tags.contains(ItemTags::DECORATION)
+                        || d.tags.contains(ItemTags::FURNITURE)
+                })
+                .unwrap_or(false)
+        })
+        .unwrap_or(0)
 }

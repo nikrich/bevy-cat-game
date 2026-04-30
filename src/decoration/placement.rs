@@ -255,7 +255,20 @@ pub fn update_preview(
         tf.translation = pos;
         tf.rotation = Quat::from_rotation_y(mode.rotation_radians);
     } else {
-        let mesh = meshes.add(def.form.make_mesh());
+        let mesh = if matches!(def.form, Form::Interior) {
+            let aabb_dims = def
+                .interior_name
+                .as_deref()
+                .and_then(|name| catalog.aabb_for(name))
+                .map(|aabb| {
+                    let scale = def.form.placement_scale();
+                    aabb.size() * scale
+                })
+                .unwrap_or(Vec3::splat(0.6));
+            meshes.add(Mesh::from(Cuboid::new(aabb_dims.x, aabb_dims.y, aabb_dims.z)))
+        } else {
+            meshes.add(def.form.make_mesh())
+        };
         let mat = materials.add(StandardMaterial {
             base_color: Color::srgba(0.4, 0.9, 0.6, 0.4),
             alpha_mode: AlphaMode::Blend,
