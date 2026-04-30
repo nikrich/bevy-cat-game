@@ -1,7 +1,11 @@
+use bevy::ecs::system::SystemParam;
 use bevy::prelude::*;
 
 pub mod collision;
+pub mod history;
 pub mod ui;
+
+pub use history::{apply_redo, apply_undo, BuildHistory, BuildOp, PieceRef};
 
 use leafwing_input_manager::prelude::ActionState;
 
@@ -34,6 +38,7 @@ impl Plugin for BuildingPlugin {
                 ),
             );
         collision::register(app);
+        history::register(app);
         ui::register(app);
     }
 }
@@ -145,27 +150,20 @@ pub struct PlacedBuilding {
 struct BuildPreview;
 
 /// Resolve the ghost chain's direction and length from cursor delta to
-/// anchor. Returns `(along_x, dir_sign, n)` where `n` is the number of
-/// cells covered **inclusively** from anchor to cursor (so anchor + cursor
-/// are both wall positions). Always at least one cell — when the cursor
-/// sits on the anchor, defaults to +X so the player can see what the next
-/// click will place. Shared by `wall_segment_transforms` and `segment_end`
-/// so preview and placement agree on geometry.
+/// anchor on the **horizontal plane** (X/Z only). Vertical chains were
+/// tried and reverted — terrain elevation differences and raycast hits at
+/// varying heights produced false-positive vertical detections that broke
+/// horizontal chains across uneven terrain. Vertical building is handled
+/// by single-click face-stacking (click a cube's top face → cube above).
 fn resolve_chain(anchor: Vec3, cursor: Vec3) -> (bool, f32, usize) {
     let dx = cursor.x - anchor.x;
     let dz = cursor.z - anchor.z;
     let cursor_moved = dx.abs() > 0.05 || dz.abs() > 0.05;
     let along_x = if cursor_moved { dx.abs() >= dz.abs() } else { true };
     let segment_length = if along_x { dx.abs() } else { dz.abs() };
-    // +1 so n includes both endpoint cells (anchor + cursor cell). For
-    // cursor at anchor, n = 1.
     let n = (segment_length / WALL_LENGTH).round() as usize + 1;
     let raw_sign = if along_x { dx } else { dz };
-    let dir_sign = if !cursor_moved || raw_sign >= 0.0 {
-        1.0
-    } else {
-        -1.0
-    };
+    let dir_sign = if !cursor_moved || raw_sign >= 0.0 { 1.0 } else { -1.0 };
     (along_x, dir_sign, n)
 }
 
@@ -333,10 +331,21 @@ fn toggle_build_mode(
             commands.remove_resource::<BuildMode>();
         }
         None => {
+            // Default to the first Wall variant — cubes are the build
+            // primitive in the cube-grid model, so the player almost
+            // always wants Wall ready on entry. Falls back to the first
+            // placeable with stock if no walls are stocked.
+            let stocked = |id: &ItemId| INFINITE_RESOURCES || inventory.count(*id) > 0;
             let selected = placeables
                 .0
                 .iter()
-                .position(|id| inventory.count(*id) > 0)
+                .position(|id| {
+                    registry
+                        .get(*id)
+                        .map(|d| matches!(d.form, Form::Wall) && stocked(id))
+                        .unwrap_or(false)
+                })
+                .or_else(|| placeables.0.iter().position(stocked))
                 .unwrap_or(0);
             let mut mode = BuildMode {
                 tool: BuildTool::Place,
@@ -348,17 +357,22 @@ fn toggle_build_mode(
                 remove_highlight: Some(spawn_remove_highlight(&mut commands, &mut meshes, &mut materials)),
             };
             if let Some(item) = placeables.0.get(selected).copied() {
-                if inventory.count(item) > 0 {
-                    refresh_build_preview(
-                        &mut commands,
-                        &mut mode,
-                        item,
-                        &registry,
-                        &asset_server,
-                        &mut meshes,
-                        &mut materials,
-                    );
-                }
+                // Always spawn a ghost on entry. The previous gate on
+                // `inventory.count(item) > 0` left the build mode visually
+                // empty when a save loaded with depleted counts (which can
+                // happen even with INFINITE_RESOURCES if the save was
+                // created without the cheat). The ghost is informational —
+                // the actual placement still gates on inventory when
+                // INFINITE_RESOURCES is off.
+                refresh_build_preview(
+                    &mut commands,
+                    &mut mode,
+                    item,
+                    &registry,
+                    &asset_server,
+                    &mut meshes,
+                    &mut materials,
+                );
             }
             commands.insert_resource(mode);
         }
@@ -593,6 +607,7 @@ const HIDE_Y: f32 = -100.0;
 fn update_preview(
     mut commands: Commands,
     cursor: Res<CursorState>,
+    keyboard: Res<ButtonInput<KeyCode>>,
     mut build_mode: Option<ResMut<BuildMode>>,
     placeables: Res<PlaceableItems>,
     registry: Res<ItemRegistry>,
@@ -653,7 +668,22 @@ fn update_preview(
     let Some(def) = registry.get(item) else { return };
     let form = def.form;
 
-    if form.placement_style() == PlacementStyle::Line && mode.line_anchor.is_some() {
+    // Line tool is only active while Shift is held. The moment Shift is
+    // released we drop the in-progress anchor + ghosts so the next click
+    // is a clean single-cube placement.
+    let shift = keyboard.pressed(KeyCode::ShiftLeft) || keyboard.pressed(KeyCode::ShiftRight);
+    let line_active = shift && form.placement_style() == PlacementStyle::Line;
+
+    if !line_active {
+        if mode.line_anchor.is_some() {
+            mode.line_anchor = None;
+        }
+        for ghost in mode.line_ghosts.drain(..) {
+            commands.entity(ghost).despawn();
+        }
+    }
+
+    if line_active && mode.line_anchor.is_some() {
         update_line_preview(
             &mut commands,
             &mut mode,
@@ -807,12 +837,21 @@ fn update_line_preview(
     }
 }
 
+/// Bundle of input + UI-state resources that `place_building` consumes.
+/// Bevy's tuple SystemParam tops out at 16 args; bundling keeps room for
+/// the rest of the placement state (registry, inventory, terrain, etc.).
+#[derive(SystemParam)]
+pub struct BuildInputs<'w> {
+    mouse: Res<'w, ButtonInput<MouseButton>>,
+    keyboard: Res<'w, ButtonInput<KeyCode>>,
+    action: Res<'w, ActionState<Action>>,
+    cursor: Res<'w, CursorState>,
+    crafting: Res<'w, crate::crafting::CraftingState>,
+}
+
 fn place_building(
     mut commands: Commands,
-    mouse: Res<ButtonInput<MouseButton>>,
-    action_state: Res<ActionState<Action>>,
-    cursor: Res<CursorState>,
-    crafting: Res<crate::crafting::CraftingState>,
+    inputs: BuildInputs,
     build_mode: Option<ResMut<BuildMode>>,
     placeables: Res<PlaceableItems>,
     registry: Res<ItemRegistry>,
@@ -824,21 +863,22 @@ fn place_building(
     mut materials: ResMut<Assets<StandardMaterial>>,
     noise: Res<WorldNoise>,
     terrain: Res<Terrain>,
+    mut history: ResMut<BuildHistory>,
 ) {
     let Some(mut mode) = build_mode else { return };
-    if cursor.pointer_over_ui || crafting.open {
+    if inputs.cursor.pointer_over_ui || inputs.crafting.open {
         return;
     }
 
     // Single-shot click only — no held-mouse stamping. Space (and gamepad
     // South via Action::Place) is treated identically to a left click.
-    let click = mouse.just_pressed(MouseButton::Left)
-        || action_state.just_pressed(&Action::Place);
+    let click = inputs.mouse.just_pressed(MouseButton::Left)
+        || inputs.action.just_pressed(&Action::Place);
     if !click {
         return;
     }
 
-    let Some(cursor_world) = cursor.cursor_world else { return };
+    let Some(cursor_world) = inputs.cursor.cursor_world else { return };
 
     // Route on the active tool. Place / Remove for now; future Move, Pick,
     // and door-into-wall Replace plug in here without disturbing the rest
@@ -848,24 +888,31 @@ fn place_building(
             remove_clicked_piece(
                 &mut commands,
                 cursor_world,
-                cursor.cursor_hit,
+                inputs.cursor.cursor_hit,
                 &placed_q,
                 &registry,
                 &mut inventory,
                 &mut inv_events,
+                &mut history,
             );
         }
         BuildTool::Place => {
             let Some(item) = placeables.0.get(mode.selected).copied() else { return };
             let Some(def) = registry.get(item) else { return };
             let form = def.form;
-            if form.placement_style() == PlacementStyle::Line {
+            // Plain click = single cube. Shift+click on a line-style form
+            // (walls) opens the line tool: first shift+click sets anchor,
+            // second shift+click confirms the chain. Releasing Shift in
+            // `update_preview` clears any in-progress anchor and ghosts.
+            let shift = inputs.keyboard.pressed(KeyCode::ShiftLeft)
+                || inputs.keyboard.pressed(KeyCode::ShiftRight);
+            if shift && form.placement_style() == PlacementStyle::Line {
                 place_wall_line(
                     &mut commands,
                     &mut mode,
                     item,
                     cursor_world,
-                    cursor.cursor_hit,
+                    inputs.cursor.cursor_hit,
                     &registry,
                     &asset_server,
                     &mut inventory,
@@ -875,6 +922,7 @@ fn place_building(
                     &mut materials,
                     &terrain,
                     &noise,
+                    &mut history,
                 );
             } else {
                 place_single(
@@ -883,7 +931,7 @@ fn place_building(
                     item,
                     form,
                     cursor_world,
-                    cursor.cursor_hit,
+                    inputs.cursor.cursor_hit,
                     &registry,
                     &asset_server,
                     &mut inventory,
@@ -893,6 +941,7 @@ fn place_building(
                     &mut materials,
                     &terrain,
                     &noise,
+                    &mut history,
                 );
             }
         }
@@ -904,54 +953,37 @@ fn place_building(
 /// ground projection), despawn it, and refund 1 of its item to inventory.
 /// Always refunds, even with `INFINITE_RESOURCES` on, so the player can
 /// see counts go up while testing.
+#[allow(clippy::too_many_arguments)]
 fn remove_clicked_piece(
     commands: &mut Commands,
-    cursor_world: Vec3,
+    _cursor_world: Vec3,
     cursor_hit: Option<CursorHit>,
     placed_q: &Query<(&Transform, &PlacedBuilding), Without<BuildPreview>>,
     registry: &ItemRegistry,
     inventory: &mut Inventory,
     inv_events: &mut MessageWriter<InventoryChanged>,
+    history: &mut BuildHistory,
 ) {
-    // Try the raycast hit first — exact "what pixel did the player click?"
-    // semantics. Only acts on entities actually in `placed_q` (i.e.
-    // PlacedBuilding entities — terrain hits, ghosts, the player capsule
-    // are all silently ignored).
-    let target = cursor_hit
-        .and_then(|hit| placed_q.get(hit.entity).ok().map(|(_, b)| (hit.entity, b.item)))
-        .or_else(|| {
-            // Fallback: nearest placed piece within PICKUP_RADIUS of the
-            // cursor's ground projection. Catches edge cases where the
-            // raycast missed (rare with cube colliders).
-            let mut closest: Option<(Entity, ItemId, f32)> = None;
-            for (tf, building) in placed_q.iter() {
-                let dx = tf.translation.x - cursor_world.x;
-                let dz = tf.translation.z - cursor_world.z;
-                let d = (dx * dx + dz * dz).sqrt();
-                if d <= PICKUP_RADIUS && closest.map(|c| d < c.2).unwrap_or(true) {
-                    // Need to find the entity for this pair — re-iterate
-                    // the query with `iter()` zipped with entities. Easier:
-                    // just track the entity directly. Switch the query to
-                    // `Query<(Entity, &Transform, &PlacedBuilding)>` if
-                    // this fallback gets hot.
-                    closest = Some((Entity::PLACEHOLDER, building.item, d));
-                }
-            }
-            // The fallback path can't return a real entity without an
-            // entity-aware query; raycast hit is the practical path with
-            // cube colliders, so keep this as a no-op for now and rely on
-            // raycast.
-            let _ = closest;
-            None
-        });
+    // Raycast hit is the only path with cube colliders — the camera ray
+    // hits the cube directly when the player visually points at it. The
+    // ground-projection fallback was always a dead branch in practice.
+    let Some(hit) = cursor_hit else { return };
+    let Ok((tf, building)) = placed_q.get(hit.entity) else { return };
+    let item = building.item;
+    let transform = *tf;
+    let entity = hit.entity;
 
-    let Some((entity, item)) = target else { return };
     commands.entity(entity).despawn();
     inventory.add(item, 1);
     inv_events.write(InventoryChanged {
         item,
         new_count: inventory.count(item),
     });
+    history.record(BuildOp::Removed(vec![PieceRef {
+        item,
+        transform,
+        entity: None,
+    }]));
     if let Some(def) = registry.get(item) {
         info!("[build] removed {}", def.display_name);
     }
@@ -973,6 +1005,7 @@ fn place_wall_line(
     materials: &mut ResMut<Assets<StandardMaterial>>,
     terrain: &Terrain,
     noise: &WorldNoise,
+    history: &mut BuildHistory,
 ) {
     match mode.line_anchor {
         None => {
@@ -990,7 +1023,7 @@ fn place_wall_line(
             // cursor sits on anchor) so a confirm-click always progresses.
             let segment = wall_segment_transforms(anchor, cursor_world);
 
-            let mut placed_count = 0usize;
+            let mut placed_pieces: Vec<PieceRef> = Vec::new();
             for tx in &segment {
                 if !INFINITE_RESOURCES && inventory.count(item) == 0 {
                     break;
@@ -998,7 +1031,7 @@ fn place_wall_line(
                 if is_position_occupied(tx.translation, placed_q) {
                     continue;
                 }
-                spawn_placed_building(
+                let new_entity = spawn_placed_building(
                     commands,
                     registry,
                     asset_server,
@@ -1011,13 +1044,23 @@ fn place_wall_line(
                     let entry = inventory.items.entry(item).or_insert(0);
                     *entry = entry.saturating_sub(1);
                 }
-                placed_count += 1;
+                if let Some(entity) = new_entity {
+                    placed_pieces.push(PieceRef {
+                        item,
+                        transform: *tx,
+                        entity: Some(entity),
+                    });
+                }
             }
-            if placed_count > 0 && !INFINITE_RESOURCES {
-                inv_events.write(InventoryChanged {
-                    item,
-                    new_count: inventory.count(item),
-                });
+            let placed_count = placed_pieces.len();
+            if placed_count > 0 {
+                if !INFINITE_RESOURCES {
+                    inv_events.write(InventoryChanged {
+                        item,
+                        new_count: inventory.count(item),
+                    });
+                }
+                history.record(BuildOp::Placed(placed_pieces));
             }
 
             // Clear ghosts; update_preview will respawn the next set on the
@@ -1060,6 +1103,7 @@ fn place_single(
     materials: &mut ResMut<Assets<StandardMaterial>>,
     terrain: &Terrain,
     noise: &WorldNoise,
+    history: &mut BuildHistory,
 ) {
     if !INFINITE_RESOURCES && inventory.count(item) == 0 {
         return;
@@ -1073,9 +1117,16 @@ fn place_single(
     let transform =
         Transform::from_translation(pos).with_rotation(Quat::from_rotation_y(mode.rotation));
 
-    spawn_placed_building(
+    let new_entity = spawn_placed_building(
         commands, registry, asset_server, meshes, materials, item, transform,
     );
+    if let Some(entity) = new_entity {
+        history.record(BuildOp::Placed(vec![PieceRef {
+            item,
+            transform,
+            entity: Some(entity),
+        }]));
+    }
     if !INFINITE_RESOURCES {
         let entry = inventory.items.entry(item).or_insert(0);
         *entry = entry.saturating_sub(1);
@@ -1164,8 +1215,10 @@ pub fn enter_placing_with(
     }
 }
 
-/// Spawn a placed building from a known transform. Used by `place_building`
-/// and by save/load.
+/// Spawn a placed building from a known transform. Used by `place_building`,
+/// the undo/redo restore path, and save/load. Returns the spawned entity
+/// so callers can record it in the build history; returns `None` if the
+/// item id isn't in the registry (callers can ignore the result).
 pub fn spawn_placed_building(
     commands: &mut Commands,
     registry: &ItemRegistry,
@@ -1174,8 +1227,8 @@ pub fn spawn_placed_building(
     materials: &mut ResMut<Assets<StandardMaterial>>,
     item: ItemId,
     transform: Transform,
-) {
-    let Some(def) = registry.get(item) else { return };
+) -> Option<Entity> {
+    let def = registry.get(item)?;
     let scale = def.form.placement_scale();
     let scaled = transform.with_scale(transform.scale * Vec3::splat(scale));
 
@@ -1186,7 +1239,7 @@ pub fn spawn_placed_building(
             scaled,
         ));
         collision::attach_for_form(&mut e, def.form, &transform);
-        return;
+        return Some(e.id());
     }
 
     let mesh = def.form.make_mesh();
@@ -1202,4 +1255,5 @@ pub fn spawn_placed_building(
         scaled,
     ));
     collision::attach_for_form(&mut e, def.form, &transform);
+    Some(e.id())
 }

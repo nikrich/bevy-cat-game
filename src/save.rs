@@ -361,7 +361,7 @@ fn load_game(
             warn!("Building key not in registry: {}", b.item);
             continue;
         };
-        spawn_placed_building(
+        let _ = spawn_placed_building(
             &mut commands,
             &registry,
             &asset_server,
