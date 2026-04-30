@@ -44,7 +44,6 @@ impl Plugin for BuildingPlugin {
                 ),
             );
         collision::register(app);
-        history::register(app);
         ui::register(app);
     }
 }
