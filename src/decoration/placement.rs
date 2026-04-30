@@ -1,5 +1,11 @@
 //! Decoration placement -- magnetic-continuous (v1: fine 0.1m grid).
 
+use bevy::prelude::*;
+
+/// Marker for the decoration ghost preview entity. One at a time.
+#[derive(Component)]
+pub struct DecorationPreview;
+
 /// Granularity of v1 magnetic snap. 0.1m is fine enough that the grid
 /// is invisible at iso zoom but coarse enough that two pieces placed
 /// "near each other" line up.
@@ -194,5 +200,133 @@ mod attach_tests {
             AttachInputKind::OtherPlaced { top_y: 1.0 },
         ));
         assert!(matches!(r, AttachSurface::Terrain { .. }));
+    }
+}
+
+use crate::edit::PlacedItem;
+use crate::input::{CursorHit, CursorState};
+use crate::items::{Form, ItemRegistry};
+use crate::world::biome::WorldNoise;
+use crate::world::terrain::Terrain;
+use super::{DecorationMode, DecorationTool};
+
+pub fn update_preview(
+    mut commands: Commands,
+    decoration_mode: Option<ResMut<DecorationMode>>,
+    cursor: Res<CursorState>,
+    placed_q: Query<(&Transform, &PlacedItem), Without<DecorationPreview>>,
+    registry: Res<ItemRegistry>,
+    terrain: Res<Terrain>,
+    noise: Res<WorldNoise>,
+    placeables: Res<crate::building::PlaceableItems>,
+    mut preview_q: Query<(Entity, &mut Transform), With<DecorationPreview>>,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut materials: ResMut<Assets<StandardMaterial>>,
+) {
+    let Some(mode) = decoration_mode else {
+        // Mode off -- despawn any lingering preview.
+        for (e, _) in &preview_q {
+            commands.entity(e).despawn();
+        }
+        return;
+    };
+    if !matches!(mode.tool, DecorationTool::Place) {
+        for (e, _) in &preview_q {
+            commands.entity(e).despawn();
+        }
+        return;
+    }
+    let Some(item_id) = placeables.0.get(mode.selected).copied() else { return };
+    let Some(def) = registry.get(item_id) else { return };
+
+    let pos = compute_decoration_placement(
+        cursor.cursor_world.unwrap_or(Vec3::ZERO),
+        cursor.cursor_hit,
+        def,
+        &placed_q,
+        &registry,
+        &terrain,
+        &noise,
+    );
+
+    if let Ok((_, mut tf)) = preview_q.single_mut() {
+        tf.translation = pos;
+        tf.rotation = Quat::from_rotation_y(mode.rotation_radians);
+    } else {
+        let mesh = meshes.add(def.form.make_mesh());
+        let mat = materials.add(StandardMaterial {
+            base_color: Color::srgba(0.4, 0.9, 0.6, 0.4),
+            alpha_mode: AlphaMode::Blend,
+            ..default()
+        });
+        commands.spawn((
+            DecorationPreview,
+            Mesh3d(mesh),
+            MeshMaterial3d(mat),
+            Transform::from_translation(pos)
+                .with_rotation(Quat::from_rotation_y(mode.rotation_radians)),
+        ));
+    }
+}
+
+/// Top-level placement decision. Calls `pick_attach_surface` then snaps
+/// XZ via `snap_to_fine_grid`. v1 -- no magnet anchors.
+pub fn compute_decoration_placement(
+    cursor_world: Vec3,
+    cursor_hit: Option<CursorHit>,
+    def: &crate::items::ItemDef,
+    placed_q: &Query<(&Transform, &PlacedItem), Without<DecorationPreview>>,
+    registry: &ItemRegistry,
+    terrain: &Terrain,
+    noise: &WorldNoise,
+) -> Vec3 {
+    let lift = def.form.placement_lift();
+
+    let input = if let Some(hit) = cursor_hit {
+        if let Ok((tf, building)) = placed_q.get(hit.entity) {
+            let hit_def = registry.get(building.item);
+            let top_y = tf.translation.y + hit_def.map(|d| d.form.placement_lift()).unwrap_or(0.0);
+            let kind = if hit_def.map_or(false, |d| matches!(d.form, Form::Floor)) {
+                AttachInputKind::Floor { top_y }
+            } else {
+                AttachInputKind::OtherPlaced { top_y }
+            };
+            AttachInput { point: hit.point, normal: hit.normal, kind }
+        } else {
+            AttachInput { point: hit.point, normal: hit.normal, kind: AttachInputKind::Terrain }
+        }
+    } else {
+        AttachInput {
+            point: cursor_world,
+            normal: Vec3::Y,
+            kind: AttachInputKind::Terrain,
+        }
+    };
+
+    let surface = pick_attach_surface(input);
+    match surface {
+        AttachSurface::Terrain { xz } => {
+            let x = snap_to_fine_grid(xz.x);
+            let z = snap_to_fine_grid(xz.z);
+            let y = terrain.height_at_or_sample(x, z, noise);
+            Vec3::new(x, y + lift, z)
+        }
+        AttachSurface::FloorTop { xz, top_y } => {
+            let x = snap_to_fine_grid(xz.x);
+            let z = snap_to_fine_grid(xz.z);
+            Vec3::new(x, top_y + lift, z)
+        }
+        AttachSurface::FurnitureTop { xz, top_y } => {
+            let x = snap_to_fine_grid(xz.x);
+            let z = snap_to_fine_grid(xz.z);
+            Vec3::new(x, top_y + lift, z)
+        }
+        AttachSurface::WallFace { point, normal } => {
+            let off = normal.normalize() * 0.05;
+            let world = point + off;
+            let x = snap_to_fine_grid(world.x);
+            let z = snap_to_fine_grid(world.z);
+            Vec3::new(x, world.y, z)
+        }
     }
 }

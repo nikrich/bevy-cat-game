@@ -19,6 +19,7 @@ impl Plugin for DecorationPlugin {
             (
                 toggle_decoration_mode,
                 interior::resolve_interior_spawns,
+                placement::update_preview,
             ),
         );
         app.add_systems(EguiPrimaryContextPass, catalog_ui::draw_decoration_catalog);
