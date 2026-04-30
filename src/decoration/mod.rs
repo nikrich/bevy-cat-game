@@ -9,6 +9,7 @@ pub mod move_tool;
 pub mod place_tool;
 pub mod placement;
 pub mod remove_tool;
+pub mod rotation;
 
 use crate::input::{Action, CursorState};
 
@@ -32,6 +33,7 @@ impl Plugin for DecorationPlugin {
                 )
                     .chain(),
                 hotbar_ui::select_tool_hotkeys,
+                rotation::rotate_decoration,
             ),
         );
         app.add_systems(

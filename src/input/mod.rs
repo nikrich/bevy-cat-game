@@ -281,6 +281,7 @@ fn compute_cursor_world(
     fades: Res<crate::camera::occluder_fade::OccluderFades>,
     placed_q: Query<&crate::edit::PlacedItem>,
     registry: Res<crate::items::ItemRegistry>,
+    move_carry: Option<Res<crate::decoration::move_tool::MoveCarry>>,
 ) {
     cursor.cursor_world = None;
     cursor.cursor_hit = None;
@@ -301,12 +302,20 @@ fn compute_cursor_world(
 
     // Rapier raycast: returns the closest collider the camera ray hits.
     // `solid=true` so rays starting inside a collider report time_of_impact=0.
-    // The predicate skips faded *non-floor* entities — camera-line walls
-    // and indoor-reveal ceilings should not block the cursor, but floors
-    // always need to be hittable (the player stands and places on them
-    // even when they happen to be part of a fade transition).
+    // The predicate skips:
+    //   1. Faded non-floor entities (camera-line walls, indoor-reveal
+    //      ceilings) -- but floors stay hittable even mid-fade so the
+    //      player can place on them.
+    //   2. The decoration Move tool's currently carried entity -- without
+    //      this, picking up a piece would have the cursor raycast hit the
+    //      carried piece itself, falling through to terrain Y under the
+    //      floor and the carried piece teleports underground.
+    let carried_entity = move_carry.as_ref().and_then(|m| m.entity);
     if let Ok(ctx) = rapier.single() {
         let predicate = |entity: Entity| {
+            if Some(entity) == carried_entity {
+                return false;
+            }
             if !fades.is_faded(entity) {
                 return true;
             }
