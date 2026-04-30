@@ -14,18 +14,18 @@ use crate::inventory::{Inventory, InventoryChanged};
 use crate::items::{InteriorCatalog, ItemRegistry};
 
 pub(super) const PARCHMENT: egui::Color32 = egui::Color32::from_rgb(54, 38, 24);
-pub(super) const GOLD: egui::Color32 = egui::Color32::from_rgb(220, 168, 76);
-pub(super) const GOLD_DIM: egui::Color32 = egui::Color32::from_rgb(140, 105, 50);
-pub(super) const TEXT_DIM: egui::Color32 = egui::Color32::from_rgb(172, 158, 130);
+pub(crate) const GOLD: egui::Color32 = egui::Color32::from_rgb(220, 168, 76);
+pub(crate) const GOLD_DIM: egui::Color32 = egui::Color32::from_rgb(140, 105, 50);
+pub(crate) const TEXT_DIM: egui::Color32 = egui::Color32::from_rgb(172, 158, 130);
 
 pub fn register(app: &mut App) {
     app.add_systems(
         EguiPrimaryContextPass,
-        (draw_build_tool_hotbar, super::catalog_ui::draw_decoration_catalog),
+        draw_build_tool_hotbar,
     );
 }
 
-pub(super) fn panel_frame() -> egui::Frame {
+pub(crate) fn panel_frame() -> egui::Frame {
     egui::Frame::default()
         .fill(PARCHMENT)
         .stroke(egui::Stroke::new(2.0, GOLD))

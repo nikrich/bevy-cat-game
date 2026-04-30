@@ -1,4 +1,5 @@
 use bevy::prelude::*;
+use bevy_egui::EguiPrimaryContextPass;
 use leafwing_input_manager::prelude::ActionState;
 
 pub mod catalog_ui;
@@ -20,6 +21,7 @@ impl Plugin for DecorationPlugin {
                 interior::resolve_interior_spawns,
             ),
         );
+        app.add_systems(EguiPrimaryContextPass, catalog_ui::draw_decoration_catalog);
     }
 }
 
