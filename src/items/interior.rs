@@ -25,7 +25,6 @@ use std::collections::HashMap;
 
 use super::registry::ItemRegistry;
 use super::tags::ItemTags;
-use crate::building::PlaceableItems;
 
 const INTERIOR_FIRST_PATH: &str = "models/lowpoly_interior/interior_1-500.glb";
 const INTERIOR_SECOND_PATH: &str = "models/lowpoly_interior/interior_501-1000.glb";

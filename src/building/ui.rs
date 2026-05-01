@@ -11,7 +11,7 @@ use crate::edit::{apply_redo, apply_undo, EditHistory};
 use crate::edit::PlacedItem;
 use super::{BuildMode, BuildTool, PlaceableItems};
 use crate::inventory::{Inventory, InventoryChanged};
-use crate::items::{InteriorCatalog, ItemRegistry};
+use crate::items::{Form, InteriorCatalog, ItemRegistry};
 
 pub(super) const PARCHMENT: egui::Color32 = egui::Color32::from_rgb(54, 38, 24);
 pub(crate) const GOLD: egui::Color32 = egui::Color32::from_rgb(220, 168, 76);
@@ -78,13 +78,34 @@ fn draw_build_tool_hotbar(
 
                 match mode.tool {
                     BuildTool::Place => {
-                        let item_label = mode
+                        // Resolve the currently-selected form so we can
+                        // highlight the matching swatch below.
+                        let active_form = mode
                             .selected_item(&placeables)
                             .and_then(|id| registry.get(id))
-                            .map(|d| d.display_name.as_str())
-                            .unwrap_or("(none)");
-                        ui.colored_label(GOLD, format!("piece: {}", item_label));
-                        ui.colored_label(GOLD_DIM, "[ / ]   shift+click = line");
+                            .map(|d| d.form);
+
+                        // 6-swatch piece selector — one label per structural
+                        // form, numbered 1-6 for discoverability.
+                        const SWATCHES: &[(u8, &str, Form)] = &[
+                            (1, "Wall",   Form::Wall),
+                            (2, "Floor",  Form::Floor),
+                            (3, "Door",   Form::Door),
+                            (4, "Window", Form::Window),
+                            (5, "Roof",   Form::Roof),
+                            (6, "Fence",  Form::Fence),
+                        ];
+                        for (num, label, form) in SWATCHES {
+                            let is_active = active_form.map(|f| f == *form).unwrap_or(false);
+                            let text = format!("[{}] {}", num, label);
+                            let rich = if is_active {
+                                egui::RichText::new(text).color(GOLD).strong()
+                            } else {
+                                egui::RichText::new(text).color(TEXT_DIM)
+                            };
+                            ui.add(egui::Label::new(rich).selectable(false));
+                        }
+                        ui.colored_label(GOLD_DIM, "1-6 select  |  shift+click = line");
                     }
                     BuildTool::Remove => {
                         ui.colored_label(GOLD_DIM, "click a placed cube to remove");
