@@ -1,8 +1,11 @@
 use bevy::prelude::*;
 
+pub mod cheats;
 pub mod highlight;
 pub mod history;
 pub mod placed_item;
+
+pub use cheats::INFINITE_RESOURCES;
 
 pub use highlight::HighlightPlugin;
 pub use history::{apply_redo, apply_undo, BuildOp, EditHistory, PieceRef};

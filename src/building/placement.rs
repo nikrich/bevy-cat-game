@@ -195,37 +195,3 @@ pub fn cube_target_width(def: &ItemDef) -> Option<f32> {
     }
 }
 
-/// Snap a 1-D position to the cube grid based on a footprint dimension.
-/// Terrain cells span `[i, i+1]` so cell *centres* are at `i + 0.5`.
-/// Walls / floors snap to those half-integer centres (see
-/// `compute_placement`), so:
-///   - **odd footprint** → centre on a cell (half-integer, e.g. `0.5`).
-///   - **even footprint** → centre between cells (integer, e.g. `1.0`),
-///     so the asset's left + right edges land on cell boundaries.
-/// Picking the wrong parity offsets the asset by half a cell and the
-/// door / window won't line up with the surrounding wall row.
-pub fn snap_axis(value: f32, cells: i32) -> f32 {
-    if cells.rem_euclid(2) == 1 {
-        value.floor() + 0.5
-    } else {
-        value.round()
-    }
-}
-
-/// All cell centres a footprint of `cells.x × cells.y` would cover when
-/// centred at `centre`. Used by the overlap check + the visual ghost.
-pub fn footprint_cell_centres(centre: Vec3, cells: IVec2) -> Vec<Vec3> {
-    let off_x = (cells.x - 1) as f32 * 0.5;
-    let off_z = (cells.y - 1) as f32 * 0.5;
-    let mut out = Vec::with_capacity((cells.x * cells.y) as usize);
-    for ix in 0..cells.x {
-        for iz in 0..cells.y {
-            out.push(Vec3::new(
-                centre.x + (ix as f32 - off_x),
-                centre.y,
-                centre.z + (iz as f32 - off_z),
-            ));
-        }
-    }
-    out
-}

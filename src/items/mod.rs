@@ -15,9 +15,9 @@ pub mod tags;
 
 use bevy::prelude::*;
 
-pub use form::{Form, PlacementStyle, SnapMode};
-pub use interior::{AabbBounds, InteriorCatalog, InteriorItem, InteriorPlugin, InteriorSource};
-pub use material::{Material, MaterialFamily};
+pub use form::{Form, PlacementStyle};
+pub use interior::{AabbBounds, InteriorCatalog, InteriorPlugin};
+pub use material::Material;
 pub use registry::{ItemDef, ItemId, ItemRegistry};
 pub use tags::ItemTags;
 

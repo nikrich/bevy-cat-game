@@ -77,26 +77,10 @@ impl BuildTool {
         }
     }
 
-    pub fn tint(self) -> Color {
-        match self {
-            BuildTool::Place => Color::srgb(0.45, 0.85, 0.45),
-            BuildTool::Remove => Color::srgb(0.85, 0.45, 0.45),
-        }
-    }
-
     pub const ALL: &'static [BuildTool] = &[BuildTool::Place, BuildTool::Remove];
 }
 
-/// Cursor pickup radius when checking "did the click land on a placed
-/// piece?" for the Remove tool fallback path (cursor_hit handles the
-/// happy path; this is the safety net when raycast misses).
-const PICKUP_RADIUS: f32 = 0.55;
-
-/// Dev cheat: when true, placement does not consume inventory and count
-/// checks short-circuit to "always have stock". Lets us focus on the build
-/// tool without the meta-loop of crafting/refilling. Flip to false (or wire
-/// to a `Cheats` resource) when shipping to players.
-const INFINITE_RESOURCES: bool = true;
+use crate::edit::INFINITE_RESOURCES;
 
 pub fn init_placeable_items(
     registry: Res<ItemRegistry>,

@@ -16,7 +16,7 @@ use bevy::prelude::*;
 
 use crate::input::CursorState;
 
-use super::placement::{quantize_rotation, ROTATION_STEP_RADIANS};
+use super::physics::{quantize_rotation, ROTATION_STEP_RADIANS};
 use super::DecorationMode;
 
 /// How long `R` must be held (after the initial tap-step) before the

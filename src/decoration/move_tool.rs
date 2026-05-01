@@ -10,7 +10,7 @@ use crate::items::{InteriorCatalog, ItemRegistry, ItemTags};
 use crate::world::biome::WorldNoise;
 use crate::world::terrain::Terrain;
 
-use super::placement::{compute_decoration_placement, DecorationPreview};
+use super::preview::{compute_decoration_placement, DecorationPreview};
 use super::{DecorationMode, DecorationTool};
 
 /// Marker for the entity currently being dragged by the Move tool.

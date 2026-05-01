@@ -6,8 +6,9 @@ pub mod catalog_ui;
 pub mod hotbar_ui;
 pub mod interior;
 pub mod move_tool;
+pub mod physics;
 pub mod place_tool;
-pub mod placement;
+pub mod preview;
 pub mod remove_tool;
 pub mod rotation;
 
@@ -24,7 +25,7 @@ impl Plugin for DecorationPlugin {
             (
                 toggle_decoration_mode,
                 interior::resolve_interior_spawns,
-                placement::update_preview,
+                preview::update_preview,
                 place_tool::place_decoration,
                 remove_tool::remove_decoration,
                 (
