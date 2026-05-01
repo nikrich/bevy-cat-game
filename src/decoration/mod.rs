@@ -18,6 +18,7 @@ pub struct DecorationPlugin;
 impl Plugin for DecorationPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<move_tool::MoveCarry>();
+        app.init_resource::<rotation::RotationHold>();
         app.add_systems(
             Update,
             (
