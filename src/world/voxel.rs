@@ -101,6 +101,13 @@ impl VoxelChunk {
     }
 }
 
+/// `true` for biomes that are part of a mountain (high-elevation rock).
+/// Mountain and Snow are the only biomes that exist above
+/// `MOUNTAIN_LEVEL` in the world generator (see `world::biome`).
+pub fn is_highland_biome(b: Biome) -> bool {
+    matches!(b, Biome::Mountain | Biome::Snow)
+}
+
 /// Resource holding voxel chunks for highland chunks. Non-highland
 /// chunks are absent from the map (not stored as empty).
 #[derive(Resource, Default)]
@@ -182,6 +189,28 @@ mod tests {
         chunk.set_solid_column(0, 0, (VOXEL_HEIGHT + 10) as u8);
         for ly in 0..VOXEL_HEIGHT as u8 {
             assert!(chunk.get((0, ly, 0)));
+        }
+    }
+
+    #[test]
+    fn is_highland_recognises_mountain_and_snow() {
+        assert!(is_highland_biome(Biome::Mountain));
+        assert!(is_highland_biome(Biome::Snow));
+    }
+
+    #[test]
+    fn is_highland_rejects_lowland_biomes() {
+        for b in [
+            Biome::Ocean,
+            Biome::Beach,
+            Biome::Desert,
+            Biome::Grassland,
+            Biome::Meadow,
+            Biome::Forest,
+            Biome::Taiga,
+            Biome::Tundra,
+        ] {
+            assert!(!is_highland_biome(b), "{:?} is not highland", b);
         }
     }
 }
