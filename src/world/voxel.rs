@@ -89,6 +89,16 @@ impl VoxelChunk {
             *word &= !mask;
         }
     }
+
+    /// Mark `(lx, lz)`'s voxel column solid for `ly` in 0..max_ly. Higher
+    /// voxels are left as-is (air on a fresh chunk). `max_ly` is clamped
+    /// to `VOXEL_HEIGHT`.
+    pub fn set_solid_column(&mut self, lx: u8, lz: u8, max_ly: u8) {
+        let max_ly = (max_ly as usize).min(VOXEL_HEIGHT) as u8;
+        for ly in 0..max_ly {
+            self.set((lx, ly, lz), true);
+        }
+    }
 }
 
 /// Resource holding voxel chunks for highland chunks. Non-highland
@@ -140,5 +150,38 @@ mod tests {
         assert!(!chunk.get((1, 0, 0)));
         assert!(!chunk.get((0, 1, 0)));
         assert!(!chunk.get((0, 0, 1)));
+    }
+
+    #[test]
+    fn set_solid_column_fills_y_zero_to_max_exclusive() {
+        let mut chunk = VoxelChunk::empty();
+        chunk.set_solid_column(5, 7, 4);
+        // Voxels 0..4 solid.
+        for ly in 0..4 {
+            assert!(chunk.get((5, ly, 7)), "ly={ly} should be solid");
+        }
+        // Voxel at ly=4 is air (exclusive upper bound).
+        assert!(!chunk.get((5, 4, 7)));
+        // Other columns untouched.
+        assert!(!chunk.get((6, 0, 7)));
+        assert!(!chunk.get((5, 0, 8)));
+    }
+
+    #[test]
+    fn set_solid_column_zero_height_is_noop() {
+        let mut chunk = VoxelChunk::empty();
+        chunk.set_solid_column(5, 7, 0);
+        for ly in 0..VOXEL_HEIGHT as u8 {
+            assert!(!chunk.get((5, ly, 7)));
+        }
+    }
+
+    #[test]
+    fn set_solid_column_clamps_to_voxel_height() {
+        let mut chunk = VoxelChunk::empty();
+        chunk.set_solid_column(0, 0, (VOXEL_HEIGHT + 10) as u8);
+        for ly in 0..VOXEL_HEIGHT as u8 {
+            assert!(chunk.get((0, ly, 0)));
+        }
     }
 }
