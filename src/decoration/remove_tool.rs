@@ -9,10 +9,8 @@ use crate::input::CursorState;
 use crate::inventory::{Inventory, InventoryChanged};
 use crate::items::{ItemRegistry, ItemTags};
 
+use crate::edit::INFINITE_RESOURCES;
 use super::{DecorationMode, DecorationTool};
-
-/// Same dev cheat as Place / building. Disabled inventory write when on.
-const INFINITE_RESOURCES: bool = true;
 
 #[allow(clippy::too_many_arguments)]
 pub fn remove_decoration(

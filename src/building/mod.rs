@@ -5,12 +5,13 @@ pub mod collision;
 pub mod placement;
 pub mod ui;
 
-pub use crate::edit::{apply_redo, apply_undo, BuildOp, EditHistory, PieceRef};
+use crate::decoration::interior::InteriorSpawnRequest;
+
+pub use crate::edit::{BuildOp, EditHistory, PieceRef};
 pub use placement::{
-    compute_placement, anchor_from_hit, resolve_chain,
-    wall_segment_transforms, segment_end, snap_axis,
-    is_position_occupied, footprint_cell_centres,
-    cube_target_width, OCCUPIED_RADIUS, OCCUPIED_Y, WALL_LENGTH,
+    compute_placement, anchor_from_hit,
+    wall_segment_transforms, segment_end,
+    is_position_occupied,
 };
 
 use leafwing_input_manager::prelude::ActionState;
@@ -76,26 +77,10 @@ impl BuildTool {
         }
     }
 
-    pub fn tint(self) -> Color {
-        match self {
-            BuildTool::Place => Color::srgb(0.45, 0.85, 0.45),
-            BuildTool::Remove => Color::srgb(0.85, 0.45, 0.45),
-        }
-    }
-
     pub const ALL: &'static [BuildTool] = &[BuildTool::Place, BuildTool::Remove];
 }
 
-/// Cursor pickup radius when checking "did the click land on a placed
-/// piece?" for the Remove tool fallback path (cursor_hit handles the
-/// happy path; this is the safety net when raycast misses).
-const PICKUP_RADIUS: f32 = 0.55;
-
-/// Dev cheat: when true, placement does not consume inventory and count
-/// checks short-circuit to "always have stock". Lets us focus on the build
-/// tool without the meta-loop of crafting/refilling. Flip to false (or wire
-/// to a `Cheats` resource) when shipping to players.
-const INFINITE_RESOURCES: bool = true;
+use crate::edit::INFINITE_RESOURCES;
 
 pub fn init_placeable_items(
     registry: Res<ItemRegistry>,
@@ -142,7 +127,6 @@ impl BuildMode {
 }
 
 pub use crate::edit::PlacedItem;
-pub use crate::decoration::interior::InteriorSpawnRequest;
 
 #[derive(Component)]
 pub(crate) struct BuildPreview;
@@ -207,6 +191,9 @@ fn toggle_build_mode(
             // always wants Wall ready on entry. Falls back to the first
             // placeable with stock if no walls are stocked.
             let stocked = |id: &ItemId| INFINITE_RESOURCES || inventory.count(*id) > 0;
+            let structural = |id: &ItemId| {
+                registry.get(*id).map(|d| d.tags.contains(ItemTags::STRUCTURAL)).unwrap_or(false)
+            };
             let selected = placeables
                 .0
                 .iter()
@@ -216,7 +203,8 @@ fn toggle_build_mode(
                         .map(|d| matches!(d.form, Form::Wall) && stocked(id))
                         .unwrap_or(false)
                 })
-                .or_else(|| placeables.0.iter().position(stocked))
+                .or_else(|| placeables.0.iter().position(|id| structural(id) && stocked(id)))
+                .or_else(|| placeables.0.iter().position(|id| structural(id)))
                 .unwrap_or(0);
             let mut mode = BuildMode {
                 tool: BuildTool::Place,
@@ -569,15 +557,14 @@ fn update_preview(
     mut commands: Commands,
     cursor: Res<CursorState>,
     keyboard: Res<ButtonInput<KeyCode>>,
-    mut build_mode: Option<ResMut<BuildMode>>,
+    build_mode: Option<ResMut<BuildMode>>,
     placeables: Res<PlaceableItems>,
     registry: Res<ItemRegistry>,
     inventory: Res<Inventory>,
     placed_q: Query<(&Transform, &PlacedItem), Without<BuildPreview>>,
-    // Material is optional so interior previews (which use a SceneRoot or
-    // an InteriorSpawnRequest with the material attached as a child) get
-    // their Transform updated without us trying to tint a material they
-    // don't carry on the parent entity.
+    // Material is optional so scene-root previews (which have materials on
+    // child entities) get their Transform updated without us trying to tint
+    // a material they don't carry on the parent entity.
     mut previews_q: Query<
         (&mut Transform, Option<&MeshMaterial3d<StandardMaterial>>),
         With<BuildPreview>,
@@ -587,7 +574,6 @@ fn update_preview(
     noise: Res<WorldNoise>,
     terrain: Res<Terrain>,
     player_query: Query<&GlobalTransform, With<Player>>,
-    catalog: Res<InteriorCatalog>,
 ) {
     let Some(mut mode) = build_mode else { return };
 
@@ -668,7 +654,6 @@ fn update_preview(
         }
         update_single_preview(
             &mode,
-            item,
             form,
             cursor_world,
             cursor.cursor_hit,
@@ -678,7 +663,6 @@ fn update_preview(
             &mut materials,
             &terrain,
             &noise,
-            &catalog,
         );
     }
 }
@@ -686,7 +670,6 @@ fn update_preview(
 #[allow(clippy::too_many_arguments)]
 fn update_single_preview(
     mode: &BuildMode,
-    item: ItemId,
     form: Form,
     cursor_world: Vec3,
     cursor_hit: Option<CursorHit>,
@@ -699,41 +682,24 @@ fn update_single_preview(
     materials: &mut ResMut<Assets<StandardMaterial>>,
     terrain: &Terrain,
     noise: &WorldNoise,
-    catalog: &InteriorCatalog,
 ) {
     let Some(preview_entity) = mode.preview_entity else { return };
     let Ok((mut preview_tf, preview_mat)) = previews_q.get_mut(preview_entity) else { return };
 
     let style = form.placement_style();
-    // Three distinct placement modes get their own snap rules:
+    // Two distinct placement modes:
     //   - Replace (door / window): snap to whichever wall the cursor targets.
-    //   - Interior (the 1000-asset pack): snap XZ to footprint-derived grid
-    //     cells, set Y so AABB bottom rests on the surface, refuse if any
-    //     footprint cell is occupied.
-    //   - Everything else (cubes, walls, decorations): the legacy
+    //   - Everything else (cubes, walls, floors, roofs, fences): the
     //     compute_placement single-cell stack/adjacent rule.
     let (final_pos, final_yaw, valid) = if style == PlacementStyle::Replace {
         replace_preview_anchor(cursor_hit, form, registry, placed_q).unwrap_or_else(|| {
             (Vec3::new(cursor_world.x, HIDE_Y, cursor_world.z), 0.0, false)
         })
-    } else if matches!(form, Form::Interior) {
-        interior_preview_anchor(
-            item,
-            cursor_world,
-            cursor_hit,
-            registry,
-            placed_q,
-            terrain,
-            noise,
-            catalog,
-            mode.rotation,
-        )
-        .unwrap_or((Vec3::new(cursor_world.x, HIDE_Y, cursor_world.z), 0.0, false))
     } else {
-        // Same auto-stacking rule for every other form — single ghost shows
-        // at the column top of the cursor's cell. The line tool's anchor
-        // selection uses the same logic (`anchor_from_hit`), so what the
-        // player sees here matches where the first wall lands after click.
+        // Same auto-stacking rule for every structural form — single ghost
+        // shows at the column top of the cursor's cell. The line tool's
+        // anchor selection uses the same logic (`anchor_from_hit`), so what
+        // the player sees here matches where the first wall lands after click.
         let pos = compute_placement(
             cursor_world, cursor_hit, form, registry, placed_q, terrain, noise,
         );
@@ -752,32 +718,6 @@ fn update_single_preview(
             mat.base_color = if valid { GHOST_VALID } else { GHOST_INVALID };
         }
     }
-}
-
-/// Helper for `update_single_preview` — same placement rule as the
-/// click-time `compute_interior_placement` plus an occupancy check, so the
-/// ghost shows exactly where the click would land *and* whether the
-/// footprint is clear.
-#[allow(clippy::too_many_arguments)]
-fn interior_preview_anchor(
-    item: ItemId,
-    cursor_world: Vec3,
-    cursor_hit: Option<CursorHit>,
-    registry: &ItemRegistry,
-    placed_q: &Query<(&Transform, &PlacedItem), Without<BuildPreview>>,
-    terrain: &Terrain,
-    noise: &WorldNoise,
-    catalog: &InteriorCatalog,
-    rotation: f32,
-) -> Option<(Vec3, f32, bool)> {
-    let def = registry.get(item)?;
-    let name = def.interior_name.as_ref()?;
-    let aabb = catalog.aabb_for(name)?;
-    let (pos, footprint) = crate::decoration::interior::compute_interior_placement(
-        cursor_world, cursor_hit, def, aabb, placed_q, registry, terrain, noise,
-    );
-    let valid = crate::decoration::interior::footprint_clear(pos, footprint, placed_q, registry, crate::decoration::interior::blocking_rule_for(def));
-    Some((pos, rotation, valid))
 }
 
 /// Helper for `update_single_preview`: when a Replace form is selected,
@@ -1360,33 +1300,9 @@ fn place_single(
         return;
     }
 
-    // Interior items (1000-asset pack) snap to the cube grid based on their
-    // pre-computed AABB footprint, with a strict no-overlap check across
-    // every footprint cell. Other forms use the legacy single-cell
-    // raycast-driven placement (ghost and click share that path so they
-    // always land at the same spot).
-    let (pos, footprint_check) = if matches!(form, Form::Interior) {
-        let def = match registry.get(item) {
-            Some(d) => d,
-            None => return,
-        };
-        let Some(name) = def.interior_name.as_ref() else { return };
-        let Some(aabb) = catalog.aabb_for(name) else { return };
-        let (pos, footprint) = crate::decoration::interior::compute_interior_placement(
-            cursor_world, cursor_hit, def, aabb, placed_q, registry, terrain, noise,
-        );
-        if !crate::decoration::interior::footprint_clear(pos, footprint, placed_q, registry, crate::decoration::interior::blocking_rule_for(def)) {
-            // Overlap — refuse silently. Ghost is already showing red.
-            return;
-        }
-        (pos, Some(footprint))
-    } else {
-        let pos = compute_placement(
-            cursor_world, cursor_hit, form, registry, placed_q, terrain, noise,
-        );
-        (pos, None)
-    };
-    let _ = footprint_check;
+    let pos = compute_placement(
+        cursor_world, cursor_hit, form, registry, placed_q, terrain, noise,
+    );
     let transform =
         Transform::from_translation(pos).with_rotation(Quat::from_rotation_y(mode.rotation));
 

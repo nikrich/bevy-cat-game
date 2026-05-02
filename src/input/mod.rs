@@ -256,16 +256,6 @@ pub fn iso_movement(
     )
 }
 
-/// Iso-axis movement before the camera rotation, useful for UI nav.
-pub fn raw_movement(action_state: &ActionState<Action>) -> Vec2 {
-    let raw = action_state.clamped_axis_pair(&Action::Move);
-    if raw.length_squared() < 0.0001 {
-        Vec2::ZERO
-    } else {
-        raw.normalize()
-    }
-}
-
 /// Squared length of the raw movement axis. Rotation-invariant, so callers
 /// that only care about "is the player trying to move?" can skip threading
 /// the camera orbit through their system params.

@@ -10,13 +10,9 @@ use crate::items::{InteriorCatalog, ItemRegistry};
 use crate::world::biome::WorldNoise;
 use crate::world::terrain::Terrain;
 
-use super::placement::{compute_decoration_placement, is_decoration_blocked, DecorationPreview};
+use crate::edit::INFINITE_RESOURCES;
+use super::preview::{compute_decoration_placement, is_decoration_blocked, DecorationPreview};
 use super::{DecorationMode, DecorationTool};
-
-/// Mirrors `building::INFINITE_RESOURCES`: dev cheat that bypasses
-/// inventory consumption while we iterate on placement physics. Flip to
-/// false (or wire to a `Cheats` resource) when shipping.
-const INFINITE_RESOURCES: bool = true;
 
 #[allow(clippy::too_many_arguments)]
 pub fn place_decoration(

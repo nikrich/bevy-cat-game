@@ -1,17 +1,6 @@
 use bevy::prelude::*;
 use serde::{Deserialize, Serialize};
 
-/// Where on the tile grid the build preview snaps to.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum SnapMode {
-    /// Tile centre (integer x/z). Used for floors, roofs, and free-standing
-    /// furniture so they sit in the middle of a tile.
-    Cell,
-    /// Half-grid (multiples of 0.5). Lets walls/doors/windows sit ON the line
-    /// between two tiles so a 4-wall room has clean corners.
-    Edge,
-}
-
 /// Placement interaction model for a `Form`. Drives the routing decision
 /// in `building::place_building` and `building::update_preview` — the
 /// alternative would be hardcoded `matches!(form, Form::Wall)` checks
@@ -240,16 +229,6 @@ impl Form {
         }
     }
 
-    /// How the build preview snaps to the world grid. Floors and roofs sit at
-    /// tile *centres*; walls, doors, and windows sit on tile *edges* so houses
-    /// can have clean corners.
-    pub fn snap_mode(self) -> SnapMode {
-        match self {
-            Form::Wall | Form::Door | Form::Window => SnapMode::Edge,
-            _ => SnapMode::Cell,
-        }
-    }
-
     /// World-space distance from the spawn origin to the bottom of the visible
     /// mesh -- i.e. set translation.y = ground + placement_lift() and the model
     /// will look like it's resting on the ground. Calibrated to `make_mesh()`
@@ -286,33 +265,6 @@ impl Form {
             // ground. Some items will float or sink — tune in a polish pass.
             Form::Interior => 0.5,
             _ => 0.05,
-        }
-    }
-
-    /// World-space visible height of the placed model. Stacking the next piece
-    /// above this one means new_y = existing_bottom + placement_height().
-    pub fn placement_height(self) -> f32 {
-        match self {
-            Form::Floor => 0.12,
-            Form::Wall => 1.00,
-            Form::Door => 1.00,
-            Form::Window => 1.00,
-            Form::Roof => 0.18,
-            Form::Fence => 0.60,
-            Form::Bench => 0.35,
-            Form::Lantern => 0.50,
-            Form::Table => 0.50,
-            Form::Chair => 0.70,
-            Form::FlowerPot => 0.25,
-            Form::Wreath => 0.40,
-            Form::Bed => 0.30,
-            Form::Chest => 0.60,
-            Form::Campfire => 0.20,
-            Form::Barrel => 1.00,
-            Form::Bucket => 0.40,
-            Form::Stew => 0.44,
-            Form::Interior => 1.0,
-            _ => 0.30,
         }
     }
 
