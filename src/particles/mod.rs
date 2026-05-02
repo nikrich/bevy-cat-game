@@ -249,12 +249,22 @@ fn update_particles(
 /// Spawn a single ember at `position`. Used by the torch module's
 /// flame-tip spawner — the existing biome-driven `spawn_particles`
 /// system does not produce embers.
+///
+/// Callers must pre-compute and pass `particle_count` (the current live
+/// `Particle` count); the helper drops the spawn if the global
+/// `MAX_PARTICLES` cap is already saturated, so embers and biome
+/// particles share the same budget without needing a query inside
+/// `spawn_ember` itself.
 pub fn spawn_ember(
     commands: &mut Commands,
     meshes: &mut Assets<Mesh>,
     materials: &mut Assets<StandardMaterial>,
     position: Vec3,
+    particle_count: usize,
 ) {
+    if particle_count >= MAX_PARTICLES {
+        return;
+    }
     let mut rng = rand::thread_rng();
     let velocity = Vec3::new(
         rng.gen_range(-0.05..0.05_f32),
