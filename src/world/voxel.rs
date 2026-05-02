@@ -36,8 +36,17 @@ const BITS_PER_WORD: usize = u64::BITS as usize;
 pub type VoxelLocal = (u8, u8, u8);
 
 /// One chunk's worth of voxel data, bit-packed solid (1) / air (0).
+///
 /// Layout: `bit_index = ly * VOXELS_PER_CHUNK_SIDE * VOXELS_PER_CHUNK_SIDE
-/// + lz * VOXELS_PER_CHUNK_SIDE + lx`.
+/// + lz * VOXELS_PER_CHUNK_SIDE + lx` -- height outermost (YZX).
+///
+/// Why YZX rather than column-major XZY: a 2D slice at fixed `ly` is
+/// contiguous, which is the access pattern Stage 2's voxel mesher will
+/// use most (face emission scans one Y-layer at a time looking for
+/// solid voxels). Column writes (`set_solid_column`, used during fill)
+/// touch ~60 scattered cache lines per column, but fill runs once per
+/// chunk load on ~30KB of data -- measured cost is invisible. If a
+/// future hot loop proves otherwise, revisit with evidence.
 pub struct VoxelChunk {
     bits: Vec<u64>,
 }
