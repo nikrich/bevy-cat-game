@@ -218,6 +218,123 @@ pub fn emit_cave_faces(chunk: &VoxelChunk, carved: &HashSet<VoxelLocal>) -> Vec<
     faces
 }
 
+/// Cave wall colour. Slightly darker than the rock biome colour so the
+/// interior reads as "you are inside a stone cavity" not "you are
+/// looking at a stone wall from outside". Linear-space.
+const CAVE_WALL_COLOR: [f32; 4] = [0.32, 0.30, 0.28, 1.0];
+
+/// Append cave-interior cube faces to an existing `ChunkGeometry`.
+/// Face vertices are in chunk-local space (multiplied by `VOXEL_SIZE`
+/// to convert voxel indices to metres). The chunk entity's
+/// `Transform` already places the chunk's origin at its world NW
+/// corner, so chunk-local positions render at the right world place.
+///
+/// Each face is one quad (two triangles). Normals point INTO the cave
+/// (toward the carved-air side) so lighting reads correctly from inside.
+/// Winding is CCW from the cave-interior viewpoint so backface culling
+/// keeps the faces visible from inside the cave.
+pub fn append_cave_geometry(
+    chunk: &VoxelChunk,
+    carved: &HashSet<VoxelLocal>,
+    geom: &mut super::terrain::ChunkGeometry,
+) {
+    for face in emit_cave_faces(chunk, carved) {
+        let (lx, ly, lz) = face.voxel;
+        let x0 = (lx as f32) * VOXEL_SIZE;
+        let y0 = (ly as f32) * VOXEL_SIZE;
+        let z0 = (lz as f32) * VOXEL_SIZE;
+        let s = VOXEL_SIZE;
+        // Corners are placed on the face plane, and the winding order is
+        // CCW when viewed from the cave-interior side (the carved-air side),
+        // which is the OPPOSITE direction from face.normal (face.normal
+        // points toward the solid neighbour / outward into rock).
+        //
+        // The normal reported to the GPU also points INTO the cave so that
+        // directional lighting is computed correctly from the cave viewer's
+        // perspective.
+        let (corners, normal) = match face.normal {
+            [1, 0, 0] => (
+                // Wall at x = x0 + s, visible from -X (cave is to the west).
+                [
+                    [x0 + s, y0,     z0    ],
+                    [x0 + s, y0 + s, z0    ],
+                    [x0 + s, y0,     z0 + s],
+                    [x0 + s, y0 + s, z0 + s],
+                ],
+                [-1.0, 0.0, 0.0],
+            ),
+            [-1, 0, 0] => (
+                // Wall at x = x0, visible from +X (cave is to the east).
+                [
+                    [x0,     y0,     z0 + s],
+                    [x0,     y0 + s, z0 + s],
+                    [x0,     y0,     z0    ],
+                    [x0,     y0 + s, z0    ],
+                ],
+                [1.0, 0.0, 0.0],
+            ),
+            [0, 1, 0] => (
+                // Ceiling at y = y0 + s, visible from -Y (cave is below).
+                [
+                    [x0,     y0 + s, z0    ],
+                    [x0,     y0 + s, z0 + s],
+                    [x0 + s, y0 + s, z0    ],
+                    [x0 + s, y0 + s, z0 + s],
+                ],
+                [0.0, -1.0, 0.0],
+            ),
+            [0, -1, 0] => (
+                // Floor at y = y0, visible from +Y (cave is above).
+                [
+                    [x0,     y0,     z0 + s],
+                    [x0,     y0,     z0    ],
+                    [x0 + s, y0,     z0 + s],
+                    [x0 + s, y0,     z0    ],
+                ],
+                [0.0, 1.0, 0.0],
+            ),
+            [0, 0, 1] => (
+                // Wall at z = z0 + s, visible from -Z (cave is to the north).
+                [
+                    [x0 + s, y0,     z0 + s],
+                    [x0 + s, y0 + s, z0 + s],
+                    [x0,     y0,     z0 + s],
+                    [x0,     y0 + s, z0 + s],
+                ],
+                [0.0, 0.0, -1.0],
+            ),
+            [0, 0, -1] => (
+                // Wall at z = z0, visible from +Z (cave is to the south).
+                [
+                    [x0,     y0,     z0    ],
+                    [x0,     y0 + s, z0    ],
+                    [x0 + s, y0,     z0    ],
+                    [x0 + s, y0 + s, z0    ],
+                ],
+                [0.0, 0.0, 1.0],
+            ),
+            _ => continue,
+        };
+        let base = geom.positions.len() as u32;
+        geom.positions.extend_from_slice(&corners);
+        for _ in 0..4 {
+            geom.normals.push(normal);
+            geom.colors.push(CAVE_WALL_COLOR);
+        }
+        geom.uvs.extend_from_slice(&[
+            [0.0, 0.0], [0.0, 1.0], [1.0, 0.0], [1.0, 1.0],
+        ]);
+        // Winding: CCW from the cave interior side. Corners are laid out as
+        // (bottom-left, top-left, bottom-right, top-right) from the cave
+        // viewer's perspective -- so triangle 1 = (0, 1, 2) and
+        // triangle 2 = (1, 3, 2) both go CCW from inside.
+        geom.indices.extend_from_slice(&[
+            base, base + 1, base + 2,
+            base + 1, base + 3, base + 2,
+        ]);
+    }
+}
+
 /// Resource holding voxel chunks for highland chunks. Non-highland
 /// chunks are absent from the map (not stored as empty).
 ///
@@ -568,5 +685,50 @@ mod tests {
         // (1, solid), (0, 9), (0, 11), (0, *, 9), (0, *, 11) air.
         // Only (1, 10, 10) is solid -> 1 face.
         assert_eq!(faces.len(), 1);
+    }
+
+    use super::super::terrain::ChunkGeometry;
+
+    fn empty_geom() -> ChunkGeometry {
+        ChunkGeometry {
+            positions: Vec::new(),
+            normals: Vec::new(),
+            colors: Vec::new(),
+            uvs: Vec::new(),
+            indices: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn append_cave_geometry_adds_six_quads_for_one_carved_voxel_in_solid() {
+        let mut chunk = VoxelChunk::empty();
+        for dx in 0..3 {
+            for dy in 0..3 {
+                for dz in 0..3 {
+                    chunk.set((9 + dx, 9 + dy, 9 + dz), true);
+                }
+            }
+        }
+        chunk.set((10, 10, 10), false);
+        let mut carved = HashSet::new();
+        carved.insert((10, 10, 10));
+        let mut geom = empty_geom();
+        append_cave_geometry(&chunk, &carved, &mut geom);
+        // Six face quads = 6 * 4 = 24 vertices, 6 * 6 = 36 indices.
+        assert_eq!(geom.positions.len(), 24);
+        assert_eq!(geom.normals.len(), 24);
+        assert_eq!(geom.colors.len(), 24);
+        assert_eq!(geom.uvs.len(), 24);
+        assert_eq!(geom.indices.len(), 36);
+    }
+
+    #[test]
+    fn append_cave_geometry_is_noop_when_carved_set_is_empty() {
+        let chunk = VoxelChunk::empty();
+        let carved = HashSet::new();
+        let mut geom = empty_geom();
+        append_cave_geometry(&chunk, &carved, &mut geom);
+        assert!(geom.positions.is_empty());
+        assert!(geom.indices.is_empty());
     }
 }

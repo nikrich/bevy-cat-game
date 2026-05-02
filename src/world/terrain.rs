@@ -505,6 +505,7 @@ pub fn build_chunk_geometry(
     coord: ChunkCoord,
     terrain: &Terrain,
     noise: &WorldNoise,
+    voxel_layer: &super::voxel::VoxelLayer,
 ) -> ChunkGeometry {
     let data = terrain
         .chunks
@@ -683,13 +684,20 @@ pub fn build_chunk_geometry(
         }
     }
 
-    ChunkGeometry {
+    let mut geom = ChunkGeometry {
         positions,
         normals,
         colors,
         uvs,
         indices,
+    };
+    if let (Some(chunk), Some(carved)) = (
+        voxel_layer.chunks.get(&coord),
+        voxel_layer.carved.get(&coord),
+    ) {
+        super::voxel::append_cave_geometry(chunk, carved, &mut geom);
     }
+    geom
 }
 
 /// Build the renderable mesh from the chunk geometry buffers.
@@ -755,6 +763,7 @@ pub fn regenerate_dirty_chunks(
     terrain_material: Res<TerrainMaterial>,
     chunk_manager: Res<ChunkManager>,
     noise: Res<WorldNoise>,
+    voxel_layer: Res<super::voxel::VoxelLayer>,
 ) {
     if terrain.dirty.is_empty() && terrain.color_dirty.is_empty() {
         return;
@@ -778,7 +787,7 @@ pub fn regenerate_dirty_chunks(
             continue;
         };
 
-        let geom = build_chunk_geometry(coord, &terrain, &noise);
+        let geom = build_chunk_geometry(coord, &terrain, &noise, &voxel_layer);
         let mesh = meshes.add(build_chunk_mesh(&geom));
         let Some(collider) = build_chunk_collider(&geom) else {
             warn!("trimesh build failed for chunk {coord:?}");
@@ -817,7 +826,7 @@ pub fn regenerate_dirty_chunks(
         let Some(&chunk_entity) = chunk_manager.loaded.get(&coord) else {
             continue;
         };
-        let geom = build_chunk_geometry(coord, &terrain, &noise);
+        let geom = build_chunk_geometry(coord, &terrain, &noise, &voxel_layer);
         let mesh = meshes.add(build_chunk_mesh(&geom));
         commands.entity(chunk_entity).try_insert((
             Mesh3d(mesh),
