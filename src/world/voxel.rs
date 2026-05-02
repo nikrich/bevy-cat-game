@@ -101,9 +101,13 @@ impl VoxelChunk {
     }
 }
 
-/// `true` for biomes that are part of a mountain (high-elevation rock).
-/// Mountain and Snow are the only biomes that exist above
-/// `MOUNTAIN_LEVEL` in the world generator (see `world::biome`).
+/// `true` for biomes that warrant voxel substrate storage. Mountain
+/// always qualifies. Snow qualifies because it caps high mountains
+/// (elevation > SNOW_CAP_LEVEL); cold-lowland Snow tiles (assigned
+/// at low elevation when temperature is very cold) also pass, which
+/// allocates a tiny voxel column for those cells. Harmless at Stage
+/// 1; Stage 2's cave generator can gate on elevation if it ever
+/// matters.
 pub fn is_highland_biome(b: Biome) -> bool {
     matches!(b, Biome::Mountain | Biome::Snow)
 }
