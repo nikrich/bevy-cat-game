@@ -22,6 +22,7 @@ impl Plugin for WorldPlugin {
             .init_resource::<props::GatheredCells>()
             .init_resource::<water::WaterAssets>()
             .init_resource::<daynight::WorldTime>()
+            .init_resource::<daynight::DarknessFactor>()
             .add_message::<chunks::ChunkLoaded>()
             .add_systems(Startup, spawn_light)
             .add_systems(
@@ -50,6 +51,7 @@ impl Plugin for WorldPlugin {
                     props::sway_props_near_player,
                     props::apply_prop_sway,
                     daynight::advance_time,
+                    daynight::compute_darkness_factor,
                     daynight::update_sun,
                     daynight::update_sky_color,
                     daynight::update_ambient_light,

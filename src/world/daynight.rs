@@ -19,6 +19,12 @@ impl Default for WorldTime {
     }
 }
 
+/// Shared "is the world dark for the player" signal. Driven by `WorldTime`
+/// today; future cave logic will fold in a cave-occupancy term via
+/// `compute_darkness_factor`.
+#[derive(Resource, Default)]
+pub struct DarknessFactor(pub f32);
+
 pub fn advance_time(time: Res<Time>, mut world_time: ResMut<WorldTime>) {
     let hours_per_second = world_time.speed / 60.0;
     world_time.time_of_day += hours_per_second * time.delta_secs();
@@ -218,6 +224,13 @@ pub fn darkness_factor(t: f32) -> f32 {
     } else {
         (t - 18.0) / 2.0
     }
+}
+
+pub fn compute_darkness_factor(
+    world_time: Res<WorldTime>,
+    mut darkness: ResMut<DarknessFactor>,
+) {
+    darkness.0 = darkness_factor(world_time.time_of_day);
 }
 
 #[cfg(test)]
