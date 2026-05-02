@@ -67,8 +67,6 @@ const TORCH_LIGHT_PEAK_INTENSITY: f32 = 250_000.0;
 /// `DarknessFactor` so they ramp in across dusk.
 const EMBER_RATE_PER_SEC: f32 = 8.0;
 
-// Stub systems — implementations land in tasks 5-7.
-
 /// Find the kitten's `mixamorig:RightHand` bone the moment its `Name`
 /// component is inserted (Bevy's glTF loader does this when the scene
 /// resolves), then spawn the torch as a child. Early-out once a `Torch`
@@ -122,9 +120,9 @@ fn attach_torch_to_hand(
                             shadows_enabled: false,
                             ..default()
                         },
-                        // Local position relative to the Torch entity --
-                        // approximate flame-tip offset above the torch
-                        // origin. // TUNE
+                        // Local position relative to the Torch entity:
+                        // sits 0.15 above the torch origin to align with
+                        // the flame tip on the GLB.
                         Transform::from_xyz(0.0, 0.15, 0.0),
                         Visibility::default(),
                     ));
@@ -132,7 +130,7 @@ fn attach_torch_to_hand(
                         TorchEmberSource,
                         Name::new("TorchEmberSource"),
                         // Slightly above the light so embers spawn at the
-                        // visible flame tip, not the wick. // TUNE
+                        // visible flame tip, not the wick.
                         Transform::from_xyz(0.0, 0.30, 0.0),
                     ));
                 });
