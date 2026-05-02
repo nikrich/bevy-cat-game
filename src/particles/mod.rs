@@ -28,6 +28,7 @@ enum ParticleKind {
     Snowflake,
     SandWisp,
     Pollen,
+    Ember,
 }
 
 const MAX_PARTICLES: usize = 150;
@@ -148,6 +149,10 @@ fn spawn_particles(
             Color::srgb(0.95, 0.90, 0.60),
             Color::BLACK,
         ),
+        ParticleKind::Ember => {
+            // Embers are spawned via spawn_ember, not through the biome system
+            return;
+        }
     };
 
     let mesh_handle = meshes.add(mesh);
@@ -224,6 +229,12 @@ fn update_particles(
                 transform.translation.x += (t * 1.0 + transform.translation.z).sin() * 0.15 * dt;
                 transform.translation.y += (t * 0.8 + transform.translation.x).cos() * 0.1 * dt;
             }
+            ParticleKind::Ember => {
+                // Tiny lateral jitter so embers shimmer instead of rising
+                // in a perfect line. Velocity already carries them up.
+                transform.translation.x += (t * 5.0 + transform.translation.z).sin() * 0.05 * dt;
+                transform.translation.z += (t * 5.0 + transform.translation.x).cos() * 0.05 * dt;
+            }
         }
 
         // Fade out near end of life (scale down)
@@ -233,4 +244,47 @@ fn update_particles(
             transform.scale = Vec3::splat(scale.max(0.01));
         }
     }
+}
+
+/// Spawn a single ember at `position`. Used by the torch module's
+/// flame-tip spawner — the existing biome-driven `spawn_particles`
+/// system does not produce embers.
+pub fn spawn_ember(
+    commands: &mut Commands,
+    meshes: &mut Assets<Mesh>,
+    materials: &mut Assets<StandardMaterial>,
+    position: Vec3,
+) {
+    let mut rng = rand::thread_rng();
+    let velocity = Vec3::new(
+        rng.gen_range(-0.05..0.05_f32),
+        rng.gen_range(0.3..0.6_f32),
+        rng.gen_range(-0.05..0.05_f32),
+    );
+    let lifetime = rng.gen_range(0.5..1.0_f32);
+    let jitter = Vec3::new(
+        rng.gen_range(-0.02..0.02_f32),
+        0.0,
+        rng.gen_range(-0.02..0.02_f32),
+    );
+
+    let mesh = meshes.add(Sphere::new(0.02));
+    let mat = materials.add(StandardMaterial {
+        base_color: Color::srgb(1.0, 0.55, 0.15),
+        emissive: Color::srgb(1.5, 0.6, 0.1).into(),
+        unlit: true,
+        ..default()
+    });
+
+    commands.spawn((
+        Particle {
+            velocity,
+            lifetime,
+            age: 0.0,
+            kind: ParticleKind::Ember,
+        },
+        Mesh3d(mesh),
+        MeshMaterial3d(mat),
+        Transform::from_translation(position + jitter),
+    ));
 }
