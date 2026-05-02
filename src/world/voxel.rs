@@ -12,7 +12,7 @@
 //! heightmap cannot represent.
 
 use bevy::prelude::*;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use super::biome::Biome;
 use super::chunks::ChunkLoaded;
@@ -160,9 +160,21 @@ pub fn build_voxel_chunk_for_coord(coord: ChunkCoord, terrain: &Terrain) -> Opti
 
 /// Resource holding voxel chunks for highland chunks. Non-highland
 /// chunks are absent from the map (not stored as empty).
+///
+/// `dirty` lists chunks whose voxel mesh needs regeneration. The bridge
+/// system copies these into `Terrain.dirty` so the existing chunk
+/// regen path rebuilds the mesh.
+///
+/// `carved` records which voxels have been mutated from their PCG
+/// default. Stage 1 fills voxels solid up to the heightmap; carving
+/// turns them back into air. The set is the source of truth for "this
+/// voxel is part of a cavity" so the cave-face mesher knows where to
+/// emit visible cube faces.
 #[derive(Resource, Default)]
 pub struct VoxelLayer {
     pub chunks: HashMap<ChunkCoord, VoxelChunk>,
+    pub dirty: HashSet<ChunkCoord>,
+    pub carved: HashMap<ChunkCoord, HashSet<VoxelLocal>>,
 }
 
 /// Plugin that registers the [`VoxelLayer`] resource and keeps it in
@@ -363,5 +375,12 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn voxel_layer_starts_with_empty_dirty_and_carved_sets() {
+        let layer = VoxelLayer::default();
+        assert!(layer.dirty.is_empty());
+        assert!(layer.carved.is_empty());
     }
 }
