@@ -247,6 +247,16 @@
 - **Effort**: M
 - **Status**: Open
 
+## DEBT-027: Voxel fill system not in chunk-lifecycle chain
+- **Added**: 2026-05-02
+- **Severity**: Low (latent for Stage 2)
+- **Area**: world/voxel
+- **What**: `fill_voxels_on_chunk_load` and `drop_voxels_on_chunk_unload` are added to `Update` outside the chained `(track_player_chunk, load_nearby_chunks, unload_distant_chunks, ...)` block in `WorldPlugin::build`. Bevy serialises them against the lifecycle systems via `Res<Terrain>`/`ResMut<Terrain>` resource conflict, but does not guarantee ordering. If the fill system is scheduled before `load_nearby_chunks` in a frame, voxel-fill happens one frame late.
+- **Why**: Harmless at Stage 1 because nothing reads voxel data the same frame it is filled. Latent: when Stage 2's voxel mesher and the brush sinkhole-carving system land, they must run AFTER `fill_voxels_on_chunk_load` AND in the same frame the chunk loads. The current scheduling makes that fragile.
+- **Fix when**: Stage 2 implementation. Wire `fill_voxels_on_chunk_load` into the existing `.chain()` immediately after `chunks::load_nearby_chunks`, and chain the mesher / carve systems after it. File: `src/world/mod.rs:30-50`.
+- **Effort**: S (one-line change to system ordering, plus follow-up tests)
+- **Status**: Open
+
 ## DEBT-026: Remove tool should be a paint action for fast cleanup
 - **Added**: 2026-04-30
 - **Severity**: Low
