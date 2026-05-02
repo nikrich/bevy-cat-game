@@ -78,6 +78,13 @@ const EMBER_RATE_PER_SEC: f32 = 8.0;
 /// The Mixamo name coupling is the same one the animation system already
 /// pays -- see `player::attach_kitten_animations`. If the rig ever swaps
 /// off Mixamo, both this and the animations break together.
+///
+/// Known limitation: if the player ever respawns mid-frame, the old
+/// `Torch`'s deferred despawn and the new bone's `Added<Name>` event can
+/// overlap, causing the attach to skip and the new kitten to spawn
+/// torchless. Today the cat never dies, so this is not exercised. If
+/// respawn ever lands, swap the guard for a per-bone `Without<TorchHolder>`
+/// filter on `new_names` and key existence off the bone, not the torch.
 fn attach_torch_to_hand(
     mut commands: Commands,
     asset_server: Res<AssetServer>,
@@ -120,6 +127,7 @@ fn attach_torch_to_hand(
                         // approximate flame-tip offset above the torch
                         // origin. // TUNE
                         Transform::from_xyz(0.0, 0.15, 0.0),
+                        Visibility::default(),
                     ));
                     torch.spawn((
                         TorchEmberSource,
@@ -127,7 +135,6 @@ fn attach_torch_to_hand(
                         // Slightly above the light so embers spawn at the
                         // visible flame tip, not the wick. // TUNE
                         Transform::from_xyz(0.0, 0.30, 0.0),
-                        GlobalTransform::default(),
                     ));
                 });
             });
