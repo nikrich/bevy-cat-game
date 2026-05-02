@@ -177,6 +177,24 @@ pub struct VoxelLayer {
     pub carved: HashMap<ChunkCoord, HashSet<VoxelLocal>>,
 }
 
+impl VoxelLayer {
+    /// Flip the voxel at `(coord, local)` from solid to air. No-op if
+    /// the chunk isn't loaded or the voxel is already air. On success,
+    /// records the voxel in `carved` and marks the chunk `dirty` so
+    /// the mesher rebuilds.
+    pub fn carve(&mut self, coord: ChunkCoord, local: VoxelLocal) {
+        let Some(chunk) = self.chunks.get_mut(&coord) else {
+            return;
+        };
+        if !chunk.get(local) {
+            return;
+        }
+        chunk.set(local, false);
+        self.carved.entry(coord).or_default().insert(local);
+        self.dirty.insert(coord);
+    }
+}
+
 /// Plugin that registers the [`VoxelLayer`] resource and keeps it in
 /// sync with the chunk lifecycle. Listens to [`ChunkLoaded`] to
 /// populate voxels for highland chunks and to
@@ -382,5 +400,45 @@ mod tests {
         let layer = VoxelLayer::default();
         assert!(layer.dirty.is_empty());
         assert!(layer.carved.is_empty());
+    }
+
+    /// Builds a `(Terrain, VoxelLayer)` pair reusing the existing
+    /// highland terrain helper. Cell (3, 7) is Mountain at height 6.25,
+    /// giving voxel columns lx in {6,7}, lz in {14,15} solid for ly 0..12.
+    fn highland_chunk_filled() -> (Terrain, VoxelLayer) {
+        let terrain = highland_terrain_with_one_cell();
+        let mut layer = VoxelLayer::default();
+        layer.chunks.insert((0, 0), build_voxel_chunk_for_coord((0, 0), &terrain).unwrap());
+        (terrain, layer)
+    }
+
+    #[test]
+    fn carve_flips_solid_voxel_to_air_and_records_in_carved_set() {
+        let (_terrain, mut layer) = highland_chunk_filled();
+        // (6, 5, 14) is in the solid range for the test chunk.
+        layer.carve((0, 0), (6, 5, 14));
+        let chunk = layer.chunks.get(&(0, 0)).unwrap();
+        assert!(!chunk.get((6, 5, 14)));
+        let carved = layer.carved.get(&(0, 0)).unwrap();
+        assert!(carved.contains(&(6, 5, 14)));
+        assert!(layer.dirty.contains(&(0, 0)));
+    }
+
+    #[test]
+    fn carve_on_already_air_voxel_is_noop() {
+        let (_terrain, mut layer) = highland_chunk_filled();
+        // (6, 50, 14) is air (above the cap of ly=12).
+        layer.carve((0, 0), (6, 50, 14));
+        // Nothing recorded, nothing dirtied.
+        assert!(layer.carved.get(&(0, 0)).is_none() || layer.carved[&(0, 0)].is_empty());
+        assert!(!layer.dirty.contains(&(0, 0)));
+    }
+
+    #[test]
+    fn carve_on_unloaded_chunk_is_noop() {
+        let mut layer = VoxelLayer::default();
+        layer.carve((42, 42), (0, 0, 0));
+        assert!(layer.carved.is_empty());
+        assert!(layer.dirty.is_empty());
     }
 }
