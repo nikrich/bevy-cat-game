@@ -3,5 +3,6 @@ savegame.backup.json
 .claude/scheduled_tasks.lock
 target/
 mixamo_prep/
+.worktrees/
 .DS_Store
 **/.DS_Store

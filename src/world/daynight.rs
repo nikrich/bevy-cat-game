@@ -19,6 +19,12 @@ impl Default for WorldTime {
     }
 }
 
+/// Shared "is the world dark for the player" signal. Driven by `WorldTime`
+/// today; future cave logic will fold in a cave-occupancy term via
+/// `compute_darkness_factor`.
+#[derive(Resource, Default)]
+pub struct DarknessFactor(pub f32);
+
 pub fn advance_time(time: Res<Time>, mut world_time: ResMut<WorldTime>) {
     let hours_per_second = world_time.speed / 60.0;
     world_time.time_of_day += hours_per_second * time.delta_secs();
@@ -196,4 +202,73 @@ fn lerp_color(a: Color, b: Color, t: f32) -> Color {
         a.green + (b.green - a.green) * t,
         a.blue + (b.blue - a.blue) * t,
     )
+}
+
+/// Maps `time_of_day` (hours, 0.0..24.0) to a darkness factor in [0.0, 1.0].
+///
+/// 0.0 means full daylight (no torch); 1.0 means full night. The twilight and
+/// dawn windows linearly ramp the factor so the torch fades in/out instead
+/// of popping. Windows mirror `update_sky_color`'s 18-20h twilight and 5-7h
+/// dawn lerps so the torch fades in as the sky transitions from red to night.
+///
+/// Cave/dark-interior contributions will be folded in by ORing (taking max
+/// of) this value with a cave-occupancy term in `compute_darkness_factor`.
+/// Per DEC-024, no cave code exists yet.
+pub fn darkness_factor(t: f32) -> f32 {
+    if t < 5.0 || t >= 20.0 {
+        1.0
+    } else if t < 7.0 {
+        1.0 - (t - 5.0) / 2.0
+    } else if t < 18.0 {
+        0.0
+    } else {
+        (t - 18.0) / 2.0
+    }
+}
+
+pub fn compute_darkness_factor(
+    world_time: Res<WorldTime>,
+    mut darkness: ResMut<DarknessFactor>,
+) {
+    darkness.0 = darkness_factor(world_time.time_of_day);
+}
+
+#[cfg(test)]
+mod darkness_tests {
+    use super::*;
+
+    #[test]
+    fn full_night_at_midnight() {
+        assert_eq!(darkness_factor(0.0), 1.0);
+        assert_eq!(darkness_factor(2.5), 1.0);
+        assert_eq!(darkness_factor(4.999), 1.0);
+    }
+
+    #[test]
+    fn full_night_after_twenty() {
+        assert_eq!(darkness_factor(20.0), 1.0);
+        assert_eq!(darkness_factor(22.5), 1.0);
+        assert_eq!(darkness_factor(23.999), 1.0);
+    }
+
+    #[test]
+    fn dawn_ramps_one_to_zero() {
+        assert!((darkness_factor(5.0) - 1.0).abs() < 1e-5);
+        assert!((darkness_factor(6.0) - 0.5).abs() < 1e-5);
+        assert!((darkness_factor(7.0) - 0.0).abs() < 1e-5);
+    }
+
+    #[test]
+    fn dusk_ramps_zero_to_one() {
+        assert!((darkness_factor(18.0) - 0.0).abs() < 1e-5);
+        assert!((darkness_factor(19.0) - 0.5).abs() < 1e-5);
+        assert!((darkness_factor(19.5) - 0.75).abs() < 1e-5);
+    }
+
+    #[test]
+    fn full_day_between_seven_and_eighteen() {
+        assert_eq!(darkness_factor(7.001), 0.0);
+        assert_eq!(darkness_factor(12.0), 0.0);
+        assert_eq!(darkness_factor(17.999), 0.0);
+    }
 }
