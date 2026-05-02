@@ -165,6 +165,41 @@ pub struct VoxelLayer {
     pub chunks: HashMap<ChunkCoord, VoxelChunk>,
 }
 
+/// Plugin that registers the [`VoxelLayer`] resource and keeps it in
+/// sync with the chunk lifecycle. Listens to [`ChunkLoaded`] to
+/// populate voxels for highland chunks and to
+/// [`super::chunks::ChunkUnloaded`] to release them.
+pub struct VoxelPlugin;
+
+impl Plugin for VoxelPlugin {
+    fn build(&self, app: &mut App) {
+        app.init_resource::<VoxelLayer>()
+            .add_systems(Update, (fill_voxels_on_chunk_load, drop_voxels_on_chunk_unload));
+    }
+}
+
+fn fill_voxels_on_chunk_load(
+    mut events: MessageReader<ChunkLoaded>,
+    terrain: Res<Terrain>,
+    mut voxel_layer: ResMut<VoxelLayer>,
+) {
+    for ev in events.read() {
+        let coord = (ev.x, ev.z);
+        if let Some(chunk) = build_voxel_chunk_for_coord(coord, &terrain) {
+            voxel_layer.chunks.insert(coord, chunk);
+        }
+    }
+}
+
+fn drop_voxels_on_chunk_unload(
+    mut events: MessageReader<super::chunks::ChunkUnloaded>,
+    mut voxel_layer: ResMut<VoxelLayer>,
+) {
+    for ev in events.read() {
+        voxel_layer.chunks.remove(&(ev.x, ev.z));
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
