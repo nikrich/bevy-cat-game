@@ -158,6 +158,66 @@ pub fn build_voxel_chunk_for_coord(coord: ChunkCoord, terrain: &Terrain) -> Opti
     }
 }
 
+/// One face quad emitted by [`emit_cave_faces`]. Coordinates are in
+/// chunk-local voxel space; the integrator multiplies by `VOXEL_SIZE`
+/// and offsets by the chunk's world position.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct CaveFace {
+    /// World-space relative voxel coordinates (lx, ly, lz) of the
+    /// carved voxel that owns this face.
+    pub voxel: VoxelLocal,
+    /// Direction the face points (away from the carved voxel toward
+    /// the solid neighbour). One of +/-X, +/-Y, +/-Z unit vectors.
+    pub normal: [i8; 3],
+}
+
+/// Emit one face per (carved voxel, solid neighbour) pair. Skips:
+/// - Neighbours that are also carved (no face between two air voxels).
+/// - Neighbours that are air outside the solid mountain (the
+///   heightmap mesher renders the mountain skin; voxel mesher only
+///   renders cave INTERIORS).
+/// - Neighbours that fall outside the chunk (handled by V1; V0 caves
+///   stay within a single chunk because the debug brush carves a
+///   small cylinder under the cursor).
+pub fn emit_cave_faces(chunk: &VoxelChunk, carved: &HashSet<VoxelLocal>) -> Vec<CaveFace> {
+    let mut faces = Vec::new();
+    let neighbours: [[i8; 3]; 6] = [
+        [1, 0, 0], [-1, 0, 0],
+        [0, 1, 0], [0, -1, 0],
+        [0, 0, 1], [0, 0, -1],
+    ];
+    for &voxel in carved {
+        let (lx, ly, lz) = voxel;
+        for n in neighbours {
+            let nx = lx as i16 + n[0] as i16;
+            let ny = ly as i16 + n[1] as i16;
+            let nz = lz as i16 + n[2] as i16;
+            if nx < 0 || nx >= VOXELS_PER_CHUNK_SIDE as i16 {
+                continue;
+            }
+            if nz < 0 || nz >= VOXELS_PER_CHUNK_SIDE as i16 {
+                continue;
+            }
+            if ny < 0 || ny >= VOXEL_HEIGHT as i16 {
+                continue;
+            }
+            let neighbour = (nx as u8, ny as u8, nz as u8);
+            // Skip neighbours that are themselves carved.
+            if carved.contains(&neighbour) {
+                continue;
+            }
+            // Only emit a face if the neighbour is solid.
+            if chunk.get(neighbour) {
+                faces.push(CaveFace {
+                    voxel,
+                    normal: n,
+                });
+            }
+        }
+    }
+    faces
+}
+
 /// Resource holding voxel chunks for highland chunks. Non-highland
 /// chunks are absent from the map (not stored as empty).
 ///
@@ -440,5 +500,73 @@ mod tests {
         layer.carve((42, 42), (0, 0, 0));
         assert!(layer.carved.is_empty());
         assert!(layer.dirty.is_empty());
+    }
+
+    #[test]
+    fn emit_cave_faces_returns_empty_when_no_carved_voxels() {
+        let chunk = VoxelChunk::empty();
+        let carved = HashSet::new();
+        let faces = emit_cave_faces(&chunk, &carved);
+        assert!(faces.is_empty());
+    }
+
+    #[test]
+    fn emit_cave_faces_emits_six_faces_for_isolated_carved_voxel_in_solid() {
+        let mut chunk = VoxelChunk::empty();
+        // Make a 3x3x3 solid block centred at (10, 10, 10).
+        for dx in 0..3 {
+            for dy in 0..3 {
+                for dz in 0..3 {
+                    chunk.set((9 + dx, 9 + dy, 9 + dz), true);
+                }
+            }
+        }
+        // Carve out the centre voxel.
+        chunk.set((10, 10, 10), false);
+        let mut carved = HashSet::new();
+        carved.insert((10, 10, 10));
+
+        let faces = emit_cave_faces(&chunk, &carved);
+        // One carved voxel, six solid neighbours -> six faces.
+        assert_eq!(faces.len(), 6);
+    }
+
+    #[test]
+    fn emit_cave_faces_skips_neighbour_when_neighbour_is_also_carved() {
+        let mut chunk = VoxelChunk::empty();
+        // 3x1x1 solid run.
+        chunk.set((9, 10, 10), true);
+        chunk.set((10, 10, 10), true);
+        chunk.set((11, 10, 10), true);
+        // Carve two adjacent voxels.
+        chunk.set((10, 10, 10), false);
+        chunk.set((11, 10, 10), false);
+        let mut carved = HashSet::new();
+        carved.insert((10, 10, 10));
+        carved.insert((11, 10, 10));
+
+        let faces = emit_cave_faces(&chunk, &carved);
+        // (10,10,10): solid neighbour at (9,10,10) -> 1 face.
+        // (11,10,10): -X neighbour (10,10,10) is carved (skip); all
+        //   other neighbours are air -> 0 faces.
+        // Total: 1.
+        assert_eq!(faces.len(), 1);
+    }
+
+    #[test]
+    fn emit_cave_faces_skips_voxels_at_chunk_boundary() {
+        let mut chunk = VoxelChunk::empty();
+        // Edge voxel (0, 10, 10) and its lone interior neighbour.
+        chunk.set((0, 10, 10), true);
+        chunk.set((1, 10, 10), true);
+        chunk.set((0, 10, 10), false);
+        let mut carved = HashSet::new();
+        carved.insert((0, 10, 10));
+
+        let faces = emit_cave_faces(&chunk, &carved);
+        // Carved (0,10,10) has neighbours: (-1, off-chunk skip),
+        // (1, solid), (0, 9), (0, 11), (0, *, 9), (0, *, 11) air.
+        // Only (1, 10, 10) is solid -> 1 face.
+        assert_eq!(faces.len(), 1);
     }
 }
