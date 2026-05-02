@@ -1,5 +1,41 @@
 # Session Journal
 
+## 2026-05-02 -- Voxel mountain caves designed (DEC-024)
+
+**What shipped:** A full design spec for adding PCG caves to mountains without disturbing the heightmap surface. Triggered by the user's brush playtest -- they raised a tall column to see how high they could go, the game slowed (separate diagnosis below), and they noticed the chunky stepped cliffs and asked "could we have caves in there?". The "is the brush hang dangerous?" thread closed with "seems fine" once we ruled out everything but debug-build trimesh-rebuild cost; no fix shipped, just a leading hypothesis (tall mountains stay performant in release).
+
+**Design landed:**
+- `VoxelLayer` resource alongside `Terrain`. Per-chunk 0.5m³ voxel sub-grid (2×2×60 voxels per 1m heightmap cell) for chunks containing Mountain or Snow biome
+- Heightmap caps the voxel column. Outdoor terrain renders unchanged; only highland cells switch to the voxel mesher
+- Three climate-flavoured cave generators (Alpine/Temperate/Arid) chosen by sampling the 5×5-cell biome ring around a chunk. Necessary because Mountain biome only happens at elevation > 1.8 -- Forest/Desert biomes never reach mountain altitude, so per-biome generators couldn't literally use those biome names
+- Cube-faced mesher (no marching cubes / surface nets) preserves the chunky aesthetic. Same trimesh-with-`FIX_INTERNAL_EDGES` collider pattern as today
+- Brush stays heightmap-only. Lowering past a cave ceiling fires a one-shot `SinkholeEvent` and the chamber opens from above
+- No mining verb. The cat does not break blocks deliberately. Sinkholes are accidental discoveries
+- Cave entrances are always visible mouths carved into mountain faces (per-chunk entrance guarantee)
+- Ambient cave mask coupling with the lantern spec (concurrent, separate agent owns the player light)
+- Phasing in 5 stages, each shippable on its own; V1 ships voxel storage + sinkhole carving + Alpine + crystal content
+
+**Brainstorming arc that produced the spec:**
+1. "Voxel everything?" -> rejected. Outdoor cozy aesthetic stays; voxels are an additive system for mountains only.
+2. "What does the brush do to mountains?" -> brush still works on outside; Lower can sinkhole into a cave (option C of four).
+3. "What's caves for?" -> all three (crystals + critters + ruins), V1 ships crystals only.
+4. "Cave shape?" -> per-climate generators (shape previews content). Costs ~3x generator code, accepted.
+5. "How does the player find caves?" -> always-visible mouths. Cleanest read for new players; sinkholes remain a bonus.
+6. "Voxel grain?" -> 0.5m³ after the user pushed back on 1m³ feeling cramped. Caught the conflation: voxel grain is *carving precision*, not cave size; either grain can produce spacious caves, but 0.5m³ gives finer wall detail and 4MB memory cost is fine.
+7. "Won't 0.5m voxels fight the 1m heightmap?" -> no, the two systems can co-exist with a clear translation rule (heightmap is the cap, voxels live inside it, brush stays on heightmap, voxel slices come off as the heightmap crosses 0.5m boundaries).
+
+**Self-review caught:**
+- Per-biome generators conflicted with biome assignment (Mountain biome only at elevation > 1.8, so Forest/Desert biomes never appear inside a mountain). Reframed as per-climate, classified by *surrounding* biomes. Same intent, internally consistent.
+- Cave coherence across chunk boundaries needs explicit handling -- 3x3 chunk supercluster generation, deterministic per `(seed, coord)`.
+- Crystal placement on "walls" needed clarification (side-facing solid neighbours, not floors -- otherwise crystals spawn underfoot).
+- Snow biome (snow-capped peaks) needs voxel treatment too, not just Mountain.
+
+**Open threads (next session):**
+- Implementation plan via `superpowers:writing-plans`. Phase 1 (voxel storage + cube mesher + collider, no caves yet) is the natural first slice -- validates the storage/mesh/collider pipeline without committing to any cave content.
+- The brush-hang investigation never produced a verified root cause; the leading hypothesis is debug-build trimesh-rebuild cost. Cheap follow-up: try `cargo run --release` and see if it stops feeling like a hang. If yes, no fix needed yet; if no, instrument `regenerate_dirty_chunks` with frame-time + dirty-set-length logging.
+- Crystal lighting at scale (8 simultaneous point lights might feel sparse in a 30-crystal chamber) deferred to phase 3 implementation; fallback options noted in spec.
+- Carved-voxel persistence may need a cap if a player goes nuts with Lower across a mountain range; currently set to "accept and revisit if it bites".
+
 ## 2026-05-01 / 2026-05-02 -- Animated kitten un-parked: DEBT-023 resolved, six Mixamo clips wired with velocity-driven gait
 
 **What shipped:** The animated kitten that was parked at the start of Phase 5 is back as the player visual. `assets/models/kittens_animated/kitten_12.glb` ships six Mixamo clips (Happy Idle, Happy Walk, Jumping, Picking Up, Run, Swiming) on a single mesh / single skin. `src/player/mod.rs` wires:

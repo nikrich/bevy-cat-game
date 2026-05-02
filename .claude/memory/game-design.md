@@ -94,6 +94,19 @@ A peaceful, lifelong world-crafting game where you play as a bipedal cat explori
 - Sand wisps: desert (wind-driven)
 - Pollen: meadow, grassland (floating)
 
+## Mountain caves (designed, DEC-024)
+- Mountains and Snow caps gain a voxel interior (0.5m³ sub-grid layered under the existing 1m heightmap) with PCG cave systems
+- Three climate-flavoured cave generators, classified per chunk by surrounding biomes:
+  - **Alpine** -- large rounded chambers, narrow connectors, glowing crystal clusters on side walls (V1 ship)
+  - **Temperate** -- tight twisty critter warrens with sleeping nooks at branch ends (Phase 4 with critter AI)
+  - **Arid** -- stitched authored room templates with ruin props at named anchors (Phase 5 with template authoring tool)
+- Cave entrances always carved to a visible mountain face -- the player sees a dark mouth from outside
+- No mining verb. Caves are explored, not stripped
+- Brush stays heightmap-only. Lowering a mountain past a cave ceiling triggers a one-shot sinkhole, opens the chamber from above
+- If the cat falls into a deep chamber, the player walks out via a connected tunnel or Raises the floor -- no auto-rope
+- Caves are dark; ambient is masked when the cat is overhead-occluded. Player lantern owned by separate concurrent spec
+- Spec: `docs/superpowers/specs/2026-05-02-voxel-mountain-caves-design.md`
+
 ## What's left
 - Music and ambient audio (per-biome sounds)
 - Cat character model (retry with Blender 4.x or external GLB validation)

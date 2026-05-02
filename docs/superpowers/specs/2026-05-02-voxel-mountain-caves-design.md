@@ -1,8 +1,8 @@
 # Voxel Mountain Caves
 
-> Status: Designed (pending approval 2026-05-02)
+> Status: Designed (approved 2026-05-02)
 > Extends: Phase 1 vertex-grid terrain (DEC-017, DEC-018)
-> ADR: TBD on approval
+> ADR: DEC-024
 
 ## Why
 
