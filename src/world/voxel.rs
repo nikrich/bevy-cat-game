@@ -51,9 +51,94 @@ pub struct VoxelChunk {
     bits: Vec<u64>,
 }
 
+impl VoxelChunk {
+    /// Allocate a chunk with all voxels air.
+    pub fn empty() -> Self {
+        let words = VOXELS_PER_CHUNK.div_ceil(BITS_PER_WORD);
+        Self {
+            bits: vec![0u64; words],
+        }
+    }
+
+    #[inline]
+    fn bit_index((lx, ly, lz): VoxelLocal) -> usize {
+        debug_assert!((lx as usize) < VOXELS_PER_CHUNK_SIDE);
+        debug_assert!((lz as usize) < VOXELS_PER_CHUNK_SIDE);
+        debug_assert!((ly as usize) < VOXEL_HEIGHT);
+        let lx = lx as usize;
+        let ly = ly as usize;
+        let lz = lz as usize;
+        ly * VOXELS_PER_CHUNK_SIDE * VOXELS_PER_CHUNK_SIDE + lz * VOXELS_PER_CHUNK_SIDE + lx
+    }
+
+    /// `true` if the voxel at `local` is solid.
+    pub fn get(&self, local: VoxelLocal) -> bool {
+        let bi = Self::bit_index(local);
+        let word = self.bits[bi / BITS_PER_WORD];
+        (word >> (bi % BITS_PER_WORD)) & 1 == 1
+    }
+
+    /// Set the voxel at `local` to solid (`true`) or air (`false`).
+    pub fn set(&mut self, local: VoxelLocal, solid: bool) {
+        let bi = Self::bit_index(local);
+        let word = &mut self.bits[bi / BITS_PER_WORD];
+        let mask = 1u64 << (bi % BITS_PER_WORD);
+        if solid {
+            *word |= mask;
+        } else {
+            *word &= !mask;
+        }
+    }
+}
+
 /// Resource holding voxel chunks for highland chunks. Non-highland
 /// chunks are absent from the map (not stored as empty).
 #[derive(Resource, Default)]
 pub struct VoxelLayer {
     pub chunks: HashMap<ChunkCoord, VoxelChunk>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn voxel_chunk_round_trip_set_get() {
+        let mut chunk = VoxelChunk::empty();
+        assert!(!chunk.get((0, 0, 0)));
+
+        chunk.set((1, 2, 3), true);
+        assert!(chunk.get((1, 2, 3)));
+        assert!(!chunk.get((1, 2, 4)));
+        assert!(!chunk.get((0, 0, 0)));
+
+        chunk.set((1, 2, 3), false);
+        assert!(!chunk.get((1, 2, 3)));
+    }
+
+    #[test]
+    fn voxel_chunk_corners_and_extremes() {
+        let mut chunk = VoxelChunk::empty();
+        let corners: &[VoxelLocal] = &[
+            (0, 0, 0),
+            ((VOXELS_PER_CHUNK_SIDE - 1) as u8, 0, 0),
+            (0, (VOXEL_HEIGHT - 1) as u8, 0),
+            (0, 0, (VOXELS_PER_CHUNK_SIDE - 1) as u8),
+            (
+                (VOXELS_PER_CHUNK_SIDE - 1) as u8,
+                (VOXEL_HEIGHT - 1) as u8,
+                (VOXELS_PER_CHUNK_SIDE - 1) as u8,
+            ),
+        ];
+        for &c in corners {
+            chunk.set(c, true);
+        }
+        for &c in corners {
+            assert!(chunk.get(c), "corner {:?} should be solid", c);
+        }
+        // Adjacent voxels stay air.
+        assert!(!chunk.get((1, 0, 0)));
+        assert!(!chunk.get((0, 1, 0)));
+        assert!(!chunk.get((0, 0, 1)));
+    }
 }
