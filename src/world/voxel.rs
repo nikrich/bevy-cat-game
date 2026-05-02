@@ -16,7 +16,7 @@ use std::collections::HashMap;
 
 use super::biome::Biome;
 use super::chunks::ChunkLoaded;
-use super::terrain::{ChunkCoord, Terrain, CHUNK_CELLS};
+use super::terrain::{ChunkCoord, Terrain, CHUNK_CELLS, CHUNK_VERTS};
 
 /// Voxels per heightmap cell side. 1m cell × 2 voxels = 0.5m voxels.
 pub const VOXEL_PER_CELL: usize = 2;
@@ -110,6 +110,52 @@ impl VoxelChunk {
 /// matters.
 pub fn is_highland_biome(b: Biome) -> bool {
     matches!(b, Biome::Mountain | Biome::Snow)
+}
+
+/// Build a `VoxelChunk` for `coord` by scanning the chunk's heightmap
+/// in `terrain` and filling voxels under each highland cell. Returns
+/// `None` if the chunk has no highland cells (no voxel storage needed)
+/// or the chunk isn't loaded.
+pub fn build_voxel_chunk_for_coord(coord: ChunkCoord, terrain: &Terrain) -> Option<VoxelChunk> {
+    let data = terrain.chunks.get(&coord)?;
+    let mut any_highland = false;
+    let mut chunk = VoxelChunk::empty();
+    for lz in 0..CHUNK_CELLS as usize {
+        for lx in 0..CHUNK_CELLS as usize {
+            let i = lz * CHUNK_VERTS + lx;
+            let biome = data.biomes[i];
+            if !is_highland_biome(biome) {
+                continue;
+            }
+            any_highland = true;
+            let h = data.heights[i];
+            // Only fill if the cell sits above the world origin. Cells
+            // with non-positive heights would map to max_ly = 0 and
+            // contribute nothing; skip them rather than risk a negative
+            // intermediate.
+            if h <= 0.0 {
+                continue;
+            }
+            let max_ly = (h / VOXEL_SIZE).floor() as i32;
+            if max_ly <= 0 {
+                continue;
+            }
+            let max_ly = (max_ly as usize).min(VOXEL_HEIGHT) as u8;
+            // Each heightmap cell owns a 2x2 voxel sub-grid in XZ.
+            let base_vx = (lx * VOXEL_PER_CELL) as u8;
+            let base_vz = (lz * VOXEL_PER_CELL) as u8;
+            for dx in 0..VOXEL_PER_CELL as u8 {
+                for dz in 0..VOXEL_PER_CELL as u8 {
+                    chunk.set_solid_column(base_vx + dx, base_vz + dz, max_ly);
+                }
+            }
+        }
+    }
+    if any_highland {
+        Some(chunk)
+    } else {
+        None
+    }
 }
 
 /// Resource holding voxel chunks for highland chunks. Non-highland
@@ -215,6 +261,72 @@ mod tests {
             Biome::Tundra,
         ] {
             assert!(!is_highland_biome(b), "{:?} is not highland", b);
+        }
+    }
+
+    use super::super::terrain::{ChunkData, CHUNK_VERTS};
+
+    fn highland_terrain_with_one_cell() -> Terrain {
+        let mut t = Terrain::default();
+        let mut data = ChunkData::empty();
+        // Mark cell (3, 7) as Mountain at heightmap_y = 6.25.
+        let i = ChunkData::idx(3, 7);
+        data.heights[i] = 6.25;
+        data.biomes[i] = Biome::Mountain;
+        t.chunks.insert((0, 0), data);
+        t
+    }
+
+    #[test]
+    fn build_voxel_chunk_returns_some_for_highland_chunk() {
+        let terrain = highland_terrain_with_one_cell();
+        let voxel = build_voxel_chunk_for_coord((0, 0), &terrain);
+        assert!(voxel.is_some());
+    }
+
+    #[test]
+    fn build_voxel_chunk_returns_none_for_lowland_chunk() {
+        let mut terrain = Terrain::default();
+        let mut data = ChunkData::empty();
+        for i in 0..CHUNK_VERTS * CHUNK_VERTS {
+            data.heights[i] = 0.5;
+            data.biomes[i] = Biome::Grassland;
+        }
+        terrain.chunks.insert((0, 0), data);
+        assert!(build_voxel_chunk_for_coord((0, 0), &terrain).is_none());
+    }
+
+    #[test]
+    fn build_voxel_chunk_fills_highland_cell_column_to_floor_of_height_over_voxel_size() {
+        let terrain = highland_terrain_with_one_cell();
+        let voxel = build_voxel_chunk_for_coord((0, 0), &terrain).unwrap();
+        // Cell (3, 7) maps to voxel columns at lx in {6, 7}, lz in {14, 15}.
+        // heightmap_y = 6.25 -> max_ly = floor(6.25 / 0.5) = 12.
+        for lx in 6..=7u8 {
+            for lz in 14..=15u8 {
+                for ly in 0..12u8 {
+                    assert!(voxel.get((lx, ly, lz)),
+                        "highland cell voxel {:?} should be solid", (lx, ly, lz));
+                }
+                // Voxels above the cap are air.
+                assert!(!voxel.get((lx, 12, lz)));
+                assert!(!voxel.get((lx, 13, lz)));
+            }
+        }
+    }
+
+    #[test]
+    fn build_voxel_chunk_leaves_lowland_columns_empty() {
+        let terrain = highland_terrain_with_one_cell();
+        let voxel = build_voxel_chunk_for_coord((0, 0), &terrain).unwrap();
+        // Cell (0, 0) is the default Grassland, height 0.0 -- its voxel
+        // columns at lx in {0, 1}, lz in {0, 1} stay all-air.
+        for lx in 0..=1u8 {
+            for lz in 0..=1u8 {
+                for ly in 0..12u8 {
+                    assert!(!voxel.get((lx, ly, lz)));
+                }
+            }
         }
     }
 }
