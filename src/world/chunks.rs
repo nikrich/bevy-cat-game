@@ -44,6 +44,12 @@ pub struct ChunkLoaded {
     pub entity: Entity,
 }
 
+#[derive(Message)]
+pub struct ChunkUnloaded {
+    pub x: i32,
+    pub z: i32,
+}
+
 pub fn track_player_chunk(
     player_query: Query<&Transform, With<crate::player::Player>>,
     mut chunk_manager: ResMut<ChunkManager>,
@@ -107,6 +113,7 @@ pub fn unload_distant_chunks(
     mut commands: Commands,
     mut chunk_manager: ResMut<ChunkManager>,
     mut terrain: ResMut<Terrain>,
+    mut chunk_events: MessageWriter<ChunkUnloaded>,
 ) {
     let (cx, cz) = chunk_manager.player_chunk;
     let unload_distance = RENDER_DISTANCE + 2;
@@ -123,5 +130,9 @@ pub fn unload_distant_chunks(
             commands.entity(entity).despawn();
         }
         terrain.unload_chunk(coord);
+        chunk_events.write(ChunkUnloaded {
+            x: coord.0,
+            z: coord.1,
+        });
     }
 }

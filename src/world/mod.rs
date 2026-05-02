@@ -24,6 +24,7 @@ impl Plugin for WorldPlugin {
             .init_resource::<water::WaterAssets>()
             .init_resource::<daynight::WorldTime>()
             .add_message::<chunks::ChunkLoaded>()
+            .add_message::<chunks::ChunkUnloaded>()
             .add_systems(Startup, spawn_light)
             .add_systems(
                 Update,
