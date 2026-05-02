@@ -200,10 +200,10 @@ fn lerp_color(a: Color, b: Color, t: f32) -> Color {
 
 /// Maps `time_of_day` (hours, 0.0..24.0) to a darkness factor in [0.0, 1.0].
 ///
-/// 0.0 means full daylight (no torch); 1.0 means full night. The dusk and
+/// 0.0 means full daylight (no torch); 1.0 means full night. The twilight and
 /// dawn windows linearly ramp the factor so the torch fades in/out instead
-/// of popping. Windows mirror `update_sky_color`'s 18-20h dusk and 5-7h
-/// dawn lerps so the torch lights up exactly as the sky reddens.
+/// of popping. Windows mirror `update_sky_color`'s 18-20h twilight and 5-7h
+/// dawn lerps so the torch fades in as the sky transitions from red to night.
 ///
 /// Cave/dark-interior contributions will be folded in by ORing (taking max
 /// of) this value with a cave-occupancy term in `compute_darkness_factor`.
@@ -249,7 +249,7 @@ mod darkness_tests {
     fn dusk_ramps_zero_to_one() {
         assert!((darkness_factor(18.0) - 0.0).abs() < 1e-5);
         assert!((darkness_factor(19.0) - 0.5).abs() < 1e-5);
-        assert!((darkness_factor(19.999) - 1.0).abs() < 1e-3);
+        assert!((darkness_factor(19.5) - 0.75).abs() < 1e-5);
     }
 
     #[test]
