@@ -1,5 +1,26 @@
 # Session Journal
 
+## 2026-05-02 -- Two parallel-workstream specs threaded into the roadmap
+
+Followed up the cave + torch spec writing with a roadmap-positioning pass that introduced a "Parallel workstreams" section in `spec/phases/00-index.md` and threaded both specs into it.
+
+**What changed:**
+- New "Parallel workstreams" table in `spec/phases/00-index.md` between the numbered phases and the cross-cutting principles. Lists Worldcraft Expansion (DEC-024) and Night Torch (DEC-025) with their owning specs and what each contributes
+- Workstream design rules added: must not regress numbered-phase exit criteria, must not block any numbered phase, coupling lives in the workstream spec (keeps phase docs stable)
+- DEC-024 retitled "Phase 3 worldcraft" -> "Worldcraft Expansion workstream"; consequences expanded with the roadmap positioning paragraph
+- DEC-025 added for night torch (was a spec without an ADR). Captures the rationale (one canonical `DarknessFactor` resource feeding both torch and future cave coupling, no double-light system, no inventory-equipped torch), alternatives considered (lantern reuse, craftable equip, toggle key, per-material emissive scaling, computing intensity from WorldTime locally, directional light), and consequences
+- Cave spec's "lantern" references rewritten to "torch" with a clear coupling rule: caves only contribute a cave-occupancy term into `DarknessFactor`, never spawn a player light
+- Night torch spec gained a Roadmap-position header line + ADR field
+- `game-design.md` gained a Night torch section before the Mountain caves section
+
+**Why it mattered:** The user's question "did you tie this into the existing spec?" surfaced a real omission. The cave spec (and likewise the torch spec, which I hadn't seen until this turn) were standalone documents with no positioning relative to the numbered EA roadmap. Without the parallel-workstream framing, future agents reading just the phase docs would miss two whole systems being designed; future agents reading just the specs would miss that they're parallel to (and don't block) Phase 3-7 work. The "Parallel workstreams" table is the bridge.
+
+**Coupling architecture:** Both workstreams share exactly one resource -- `DarknessFactor: f32` (0.0 = bright day, 1.0 = full dark) defined in the torch spec. Torch owns it; caves contribute to it; both subscribe to the result. The cave system never touches the torch entity, never spawns a player light, never modifies ambient intensity directly. This is the pattern I'd expect to repeat for any future darkness-gated workstream (weather variants, eclipse, indoor reveal already-existing).
+
+**Open threads:**
+- Auto-memory entry was renamed from `project_phase3_caves_designed.md` -> `project_caves_designed.md` to drop the inaccurate "phase 3" framing
+- Next step is `superpowers:writing-plans` for the cave V1 slice (Stage 1: voxel storage + cube mesher + collider, no caves yet). Same drill applies for the torch spec if its owning agent wants a plan written
+
 ## 2026-05-02 -- Voxel mountain caves designed (DEC-024)
 
 **What shipped:** A full design spec for adding PCG caves to mountains without disturbing the heightmap surface. Triggered by the user's brush playtest -- they raised a tall column to see how high they could go, the game slowed (separate diagnosis below), and they noticed the chunky stepped cliffs and asked "could we have caves in there?". The "is the brush hang dangerous?" thread closed with "seems fine" once we ruled out everything but debug-build trimesh-rebuild cost; no fix shipped, just a leading hypothesis (tall mountains stay performant in release).

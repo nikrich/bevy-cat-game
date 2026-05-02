@@ -3,6 +3,8 @@
 **Date:** 2026-05-02
 **Status:** Spec, awaiting implementation plan
 **Owner:** nikrich
+**ADR:** DEC-025
+**Roadmap position:** **Night Torch workstream** (parallel to numbered Phase 0–7 EA roadmap; see `spec/phases/00-index.md` § Parallel workstreams). Not on the EA critical path. Couples with the Worldcraft Expansion workstream (DEC-024) via the shared `DarknessFactor` resource: caves contribute a cave-occupancy term, torch reads the resulting maximum.
 
 ## Goal
 

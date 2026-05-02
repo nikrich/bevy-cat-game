@@ -3,6 +3,7 @@
 > Status: Designed (approved 2026-05-02)
 > Extends: Phase 1 vertex-grid terrain (DEC-017, DEC-018)
 > ADR: DEC-024
+> Roadmap position: **Worldcraft Expansion workstream** (parallel to numbered Phase 0–7 EA roadmap; see `spec/phases/00-index.md` § Parallel workstreams). Not on the EA critical path; ships in independent slices alongside the lantern workstream.
 
 ## Why
 
@@ -171,12 +172,12 @@ Carved voxels are stored in `VoxelLayer.carved` and persisted to save (PCG cave 
 
 ### Lighting
 
-Caves are dark by default (no skylight reaches inside). This spec owns two cave-side lighting concerns; the player-carried lantern itself is owned by a separate spec/agent and is not described here.
+Caves are dark by default (no skylight reaches inside). This spec owns two cave-side lighting concerns; the player-carried light itself is owned by the **Night Torch** workstream (`docs/superpowers/specs/2026-05-02-night-torch-design.md`, DEC-025) and is not described here.
 
 - **Crystal voxels** emit point lights with climate-tinted colour (alpine crystals = soft blue/purple). Capped at the 8 nearest to camera to keep render cost bounded; further crystals fall back to emissive material only (still visible, no cast light).
-- **Ambient masking.** When the cat is inside a cave (probe: any solid voxel directly above the cat's head within 4m), reduce ambient intensity by 80% so the lantern actually matters. Reuse the indoor-reveal probe pattern (`fade_camera_occluders` line 158).
+- **Ambient masking via `DarknessFactor`.** The Night Torch spec already defines a shared `DarknessFactor` resource (0.0 = bright day, 1.0 = full dark) computed from `WorldTime`. This spec contributes a cave occupancy term that gets OR-ed into `DarknessFactor` (the max of "it's night" and "I'm inside a cave"). Probe rule: any solid voxel directly above the cat's head within 4m → cave-occupied = 1.0. Reuse the indoor-reveal probe pattern (`fade_camera_occluders` line 158).
 
-The lantern spec is responsible for any always-on / toggleable cat light. The cave system must not also spawn a player light — the ambient mask is the only coupling, and it activates regardless of whether the lantern is on (so even an unlit cat sees a darker cave interior).
+Coupling rule: the cave system **only** publishes the cave occupancy contribution. It must not spawn a player light, must not touch the torch entity, must not modify ambient intensity directly. Everything that "the cat now lights its surroundings inside a cave" relies on flows through `DarknessFactor` → torch intensity, owned entirely by the Night Torch workstream.
 
 ### Save format extension
 
@@ -238,4 +239,4 @@ Each phase is shippable on its own and unlocks the next.
 ## Resolved (during brainstorming)
 
 - **Sinkhole egress.** If the cat falls into a deep chamber, the player must find a way out — either by walking through a connected tunnel to a natural mouth, or by Raising the floor under the cat with the brush. No auto-spawned rope or safe-descent prop. The cozy framing tolerates "I'm stuck for a moment, let me look around."
-- **Player lantern.** Owned by a separate concurrent spec. This spec's only coupling is the ambient cave mask, which activates regardless of lantern state.
+- **Player light.** Owned by the **Night Torch** workstream (`docs/superpowers/specs/2026-05-02-night-torch-design.md`, DEC-025). This spec's only coupling is publishing a cave-occupancy term into the shared `DarknessFactor` resource defined there.

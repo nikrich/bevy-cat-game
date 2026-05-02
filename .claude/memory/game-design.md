@@ -94,6 +94,15 @@ A peaceful, lifelong world-crafting game where you play as a bipedal cat explori
 - Sand wisps: desert (wind-driven)
 - Pollen: meadow, grassland (floating)
 
+## Night torch (designed, DEC-025)
+- The cat automatically holds a lit torch in its right hand at night. No inventory, no toggle, no crafting -- the torch *appears* at dusk because the cat needs it
+- `assets/models/torch/torch.glb` rides the kitten's `mixamorig:RightHand` bone, so it follows all skinned animations
+- A real `PointLight` (warm orange, peak 800k intensity, 6m range, no shadows) and ember particles (8/s) scale by a shared `DarknessFactor` resource (0.0 = bright day, 1.0 = full dark) computed from `WorldTime`
+- Fade windows mirror sky color: dusk 18-20, full night 20-05, dawn 5-7
+- `DarknessFactor` is the canonical "is it dark right now?" signal -- caves OR in their cave-occupancy contribution (DEC-024), future weather variants will too
+- New `src/torch/` module + new `ParticleKind::Ember` in the existing particle module
+- Spec: `docs/superpowers/specs/2026-05-02-night-torch-design.md`
+
 ## Mountain caves (designed, DEC-024)
 - Mountains and Snow caps gain a voxel interior (0.5m³ sub-grid layered under the existing 1m heightmap) with PCG cave systems
 - Three climate-flavoured cave generators, classified per chunk by surrounding biomes:

@@ -29,6 +29,20 @@ Each phase doc is tactical: ordered work items with acceptance criteria, intende
 | 6  | [Town + Roles + Festivals](./07-town.md)            | Planned  | 5          |
 | 7  | [Weather, Audio, Polish, EA Launch](./08-launch.md) | Planned  | 6          |
 
+## Parallel workstreams
+
+These workstreams run alongside the numbered phases above. They are not on the EA critical path; they can land whenever their owning agent finishes a slice. Each has its own spec under `docs/superpowers/specs/`.
+
+| Workstream            | Spec                                                                                                | Owns                                                                                                | Status              |
+| --------------------- | --------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------- | ------------------- |
+| Worldcraft Expansion  | [voxel-mountain-caves](../../docs/superpowers/specs/2026-05-02-voxel-mountain-caves-design.md)      | Voxel mountains, PCG caves, climate classifier, sinkhole carving, cave-occupancy `DarknessFactor` term | Designed (DEC-024) |
+| Night Torch           | [night-torch](../../docs/superpowers/specs/2026-05-02-night-torch-design.md)                        | Cat-held torch GLB, shared `DarknessFactor` resource, point light + ember particles, dawn/dusk fade | Designed (DEC-025) |
+
+Workstream design rules:
+- Must not regress the numbered-phase exit criteria.
+- Must not block any numbered phase. If a numbered phase needs work that overlaps a workstream, lift the overlap into the phase doc and shrink the workstream accordingly.
+- Coupling with numbered phases is documented in the workstream spec, not in the phase docs (keeps phase docs stable).
+
 ## Cross-cutting principles
 
 - **No fail states.** Every phase preserves spec §2.3 (no death, no eviction, gentle decay).
