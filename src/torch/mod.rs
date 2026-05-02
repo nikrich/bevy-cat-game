@@ -47,19 +47,21 @@ struct TorchLight;
 struct TorchEmberSource;
 
 /// Local transform of the torch entity relative to the right-hand bone.
-/// `// TUNE` — Mixamo right-hand bone is wrist-aligned; expect to rotate
-/// roughly 90° around X to make the handle stand upright in the palm,
-/// then nudge the translation. Iterate with `cargo run`.
+/// Tuned by playtest: `Quat::IDENTITY` happened to align the handle
+/// with the palm (the torch GLB's local axes match Mixamo's wrist
+/// orientation), and 0.05 scale matches the kitten's body proportions.
+/// The 0.05 Y nudge lifts the handle out of the palm geometry.
 const TORCH_GRIP: Transform = Transform {
     translation: Vec3::new(0.0, 0.05, 0.0),
     rotation: Quat::IDENTITY,
-    scale: Vec3::ONE,
+    scale: Vec3::splat(0.05),
 };
 
 /// Peak `PointLight::intensity` at full darkness. Scaled linearly by
-/// `DarknessFactor`. Smaller than the lantern's 1.5M because handheld
-/// open flame shouldn't blow out the surrounding scene.
-const TORCH_LIGHT_PEAK_INTENSITY: f32 = 800_000.0;
+/// `DarknessFactor`. Tuned by playtest: 800k (the original spec value)
+/// blew out the ground pool and silhouetted the cat at iso-zoom; 250k
+/// reads as a warm hearth without crushing self-shadow on the body.
+const TORCH_LIGHT_PEAK_INTENSITY: f32 = 250_000.0;
 
 /// Embers per second at full darkness. Scaled linearly by
 /// `DarknessFactor` so they ramp in across dusk.
