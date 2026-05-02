@@ -173,4 +173,40 @@ fn apply_torch_intensity(
         light.intensity = intensity;
     }
 }
-fn spawn_torch_embers() {}
+/// Spawn embers at the torch's flame tip while it's burning. Rate scales
+/// with `DarknessFactor` so the ramp matches the light fade. Reads
+/// `GlobalTransform` so the bone's animated motion (idle bob, run-cycle
+/// arm swing) carries the spawn point naturally.
+fn spawn_torch_embers(
+    mut commands: Commands,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut materials: ResMut<Assets<StandardMaterial>>,
+    darkness: Res<DarknessFactor>,
+    time: Res<Time>,
+    sources: Query<&GlobalTransform, With<TorchEmberSource>>,
+    particles: Query<(), With<crate::particles::Particle>>,
+    mut accumulator: Local<f32>,
+) {
+    let factor = darkness.0.clamp(0.0, 1.0);
+    if factor <= 0.0 {
+        *accumulator = 0.0;
+        return;
+    }
+
+    let rate = EMBER_RATE_PER_SEC * factor;
+    *accumulator += rate * time.delta_secs();
+
+    while *accumulator >= 1.0 {
+        *accumulator -= 1.0;
+        let particle_count = particles.iter().count();
+        for source_transform in &sources {
+            crate::particles::spawn_ember(
+                &mut commands,
+                meshes.as_mut(),
+                materials.as_mut(),
+                source_transform.translation(),
+                particle_count,
+            );
+        }
+    }
+}

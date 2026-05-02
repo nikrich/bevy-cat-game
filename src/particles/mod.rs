@@ -14,7 +14,7 @@ impl Plugin for ParticlePlugin {
 }
 
 #[derive(Component)]
-struct Particle {
+pub(crate) struct Particle {
     velocity: Vec3,
     lifetime: f32,
     age: f32,
