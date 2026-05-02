@@ -5,6 +5,7 @@ pub mod edit;
 pub mod edit_egui;
 pub mod props;
 pub mod terrain;
+pub mod voxel;
 pub mod water;
 
 use bevy::light::CascadeShadowConfigBuilder;
@@ -24,6 +25,7 @@ impl Plugin for WorldPlugin {
             .init_resource::<daynight::WorldTime>()
             .init_resource::<daynight::DarknessFactor>()
             .add_message::<chunks::ChunkLoaded>()
+            .add_message::<chunks::ChunkUnloaded>()
             .add_systems(Startup, spawn_light)
             .add_systems(
                 Update,
@@ -59,6 +61,7 @@ impl Plugin for WorldPlugin {
             );
         edit::register(app);
         edit_egui::register(app);
+        app.add_plugins(voxel::VoxelPlugin);
     }
 }
 
