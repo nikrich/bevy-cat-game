@@ -9,6 +9,8 @@
 
 use bevy::prelude::*;
 
+// Task 6 wires this into apply_torch_intensity/apply_torch_visibility.
+#[allow(unused_imports)]
 use crate::world::daynight::DarknessFactor;
 
 pub struct TorchPlugin;
@@ -49,7 +51,11 @@ struct TorchEmberSource;
 /// `// TUNE` — Mixamo right-hand bone is wrist-aligned; expect to rotate
 /// roughly 90° around X to make the handle stand upright in the palm,
 /// then nudge the translation. Iterate with `cargo run`.
-const TORCH_GRIP_TRANSLATION: Vec3 = Vec3::new(0.0, 0.05, 0.0);
+const TORCH_GRIP: Transform = Transform {
+    translation: Vec3::new(0.0, 0.05, 0.0),
+    rotation: Quat::IDENTITY,
+    scale: Vec3::ONE,
+};
 
 /// Peak `PointLight::intensity` at full darkness. Scaled linearly by
 /// `DarknessFactor`. Smaller than the lantern's 1.5M because handheld
