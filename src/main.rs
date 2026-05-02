@@ -13,6 +13,7 @@ mod particles;
 mod player;
 mod save;
 mod state;
+mod torch;
 mod ui;
 mod world;
 
@@ -63,5 +64,6 @@ fn main() {
         // Separated from the tuple above: Bevy's add_plugins tuple cap is 15.
         .add_plugins(ui::GameUiPlugin)
         .add_plugins(decoration::DecorationPlugin)
+        .add_plugins(torch::TorchPlugin)
         .run();
 }
