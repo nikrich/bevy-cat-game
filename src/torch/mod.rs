@@ -10,9 +10,6 @@
 use bevy::prelude::*;
 
 use crate::player::Player;
-
-// Task 6 wires this into apply_torch_intensity/apply_torch_visibility.
-#[allow(unused_imports)]
 use crate::world::daynight::DarknessFactor;
 
 pub struct TorchPlugin;
@@ -143,6 +140,38 @@ fn attach_torch_to_hand(
         break;
     }
 }
-fn apply_torch_visibility() {}
-fn apply_torch_intensity() {}
+/// Hide the entire torch hierarchy at full daylight; show it whenever
+/// `DarknessFactor > 0`. `Visibility::Inherited` lets the bone's own
+/// inherited visibility still apply (e.g. if the kitten visual is ever
+/// hidden as a whole).
+fn apply_torch_visibility(
+    darkness: Res<DarknessFactor>,
+    mut torches: Query<&mut Visibility, With<Torch>>,
+) {
+    let want_hidden = darkness.0 <= 0.0;
+    for mut visibility in &mut torches {
+        let target = if want_hidden {
+            Visibility::Hidden
+        } else {
+            Visibility::Inherited
+        };
+        if *visibility != target {
+            *visibility = target;
+        }
+    }
+}
+/// Scale the torch's `PointLight::intensity` linearly with
+/// `DarknessFactor`. Skips the write when the factor is zero -- the
+/// light is invisible anyway because `apply_torch_visibility` hid the
+/// whole hierarchy, but keeping intensity at zero matches what the user
+/// would see if visibility were toggled off independently.
+fn apply_torch_intensity(
+    darkness: Res<DarknessFactor>,
+    mut lights: Query<&mut PointLight, With<TorchLight>>,
+) {
+    let intensity = TORCH_LIGHT_PEAK_INTENSITY * darkness.0.clamp(0.0, 1.0);
+    for mut light in &mut lights {
+        light.intensity = intensity;
+    }
+}
 fn spawn_torch_embers() {}
