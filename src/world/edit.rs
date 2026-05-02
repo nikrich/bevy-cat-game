@@ -155,6 +155,7 @@ pub fn register(app: &mut App) {
             adjust_radius,
             apply_brush,
             apply_footprint_flatten,
+            apply_shaft_carve_debug,
             draw_brush_preview,
         ),
     );
@@ -458,7 +459,7 @@ fn draw_brush_preview(
         return;
     };
     // Float the ring just above the surface so it doesn't z-fight the
-    // chunk mesh. Sample the centre height; the ring is flat — close
+    // chunk mesh. Sample the centre height; the ring is flat -- close
     // enough at typical brush sizes.
     let centre_y = terrain.height_at_or_sample(world_pos.x, world_pos.z, &noise) + 0.05;
     let iso = Isometry3d::new(
@@ -468,4 +469,63 @@ fn draw_brush_preview(
     gizmos
         .circle(iso, edit_mode.radius, edit_mode.brush.tint())
         .resolution(48);
+}
+
+/// Debug hotkey: G carves a vertical cylinder of voxels under the
+/// cursor. Radius 1m (= 2 voxels), depth 5m (= 10 voxels), starting
+/// at the heightmap surface. No-op if the cursor is over a non-
+/// highland chunk (no voxel storage = nothing to carve).
+fn apply_shaft_carve_debug(
+    keys: Res<ButtonInput<KeyCode>>,
+    cursor: Res<crate::input::CursorState>,
+    edit_mode: Res<EditMode>,
+    mut voxel_layer: ResMut<crate::world::voxel::VoxelLayer>,
+) {
+    if !edit_mode.active || !keys.just_pressed(KeyCode::KeyG) {
+        return;
+    }
+    let Some(world_pos) = cursor.cursor_world else {
+        return;
+    };
+    use crate::world::voxel::{VOXEL_PER_CELL, VOXEL_SIZE, VOXELS_PER_CHUNK_SIDE};
+    use crate::world::terrain::CHUNK_CELLS;
+
+    let radius_voxels = 2i32;
+    let depth_voxels = 10i32;
+
+    // Cursor world XZ -> chunk + local voxel coordinates of the centre column.
+    let centre_vx_world = (world_pos.x / VOXEL_SIZE).floor() as i32;
+    let centre_vz_world = (world_pos.z / VOXEL_SIZE).floor() as i32;
+    // Voxel ly at the cursor's surface Y. Carve downward from here.
+    let top_ly = (world_pos.y / VOXEL_SIZE).floor() as i32;
+
+    for dvz in -radius_voxels..=radius_voxels {
+        for dvx in -radius_voxels..=radius_voxels {
+            // Circular footprint.
+            if dvx * dvx + dvz * dvz > radius_voxels * radius_voxels {
+                continue;
+            }
+            let vx_world = centre_vx_world + dvx;
+            let vz_world = centre_vz_world + dvz;
+            // Map world voxel coord to (chunk, local).
+            let voxels_per_chunk = (CHUNK_CELLS * VOXEL_PER_CELL as i32) as i32;
+            let cx = vx_world.div_euclid(voxels_per_chunk);
+            let cz = vz_world.div_euclid(voxels_per_chunk);
+            let lx = vx_world.rem_euclid(voxels_per_chunk) as u8;
+            let lz = vz_world.rem_euclid(voxels_per_chunk) as u8;
+            debug_assert!((lx as usize) < VOXELS_PER_CHUNK_SIDE);
+            debug_assert!((lz as usize) < VOXELS_PER_CHUNK_SIDE);
+            for ly_offset in 0..depth_voxels {
+                let ly = top_ly - ly_offset;
+                if ly < 0 || ly >= crate::world::voxel::VOXEL_HEIGHT as i32 {
+                    continue;
+                }
+                voxel_layer.carve((cx, cz), (lx, ly as u8, lz));
+            }
+        }
+    }
+    bevy::log::info!(
+        "[voxel-debug] carved shaft at world ({:.1}, {:.1}, {:.1})",
+        world_pos.x, world_pos.y, world_pos.z
+    );
 }
