@@ -335,6 +335,29 @@ pub fn append_cave_geometry(
     }
 }
 
+/// Move every coord from `voxel_layer.dirty` into `terrain.dirty` and
+/// clear `voxel_layer.dirty`. Pure-data helper so it's directly
+/// testable; the wrapping Bevy system is one line.
+pub fn drain_voxel_dirty_into_terrain_dirty(
+    voxel_layer: &mut VoxelLayer,
+    terrain: &mut Terrain,
+) {
+    for coord in voxel_layer.dirty.drain() {
+        terrain.dirty.insert(coord);
+    }
+}
+
+/// Bevy system: runs each frame, drains the voxel-dirty set into the
+/// terrain-dirty set. The existing `regenerate_dirty_chunks` then
+/// rebuilds the affected chunks' meshes with the new voxel cave
+/// faces appended.
+fn bridge_voxel_dirty_to_terrain(
+    mut voxel_layer: ResMut<VoxelLayer>,
+    mut terrain: ResMut<Terrain>,
+) {
+    drain_voxel_dirty_into_terrain_dirty(&mut voxel_layer, &mut terrain);
+}
+
 /// Resource holding voxel chunks for highland chunks. Non-highland
 /// chunks are absent from the map (not stored as empty).
 ///
@@ -381,7 +404,14 @@ pub struct VoxelPlugin;
 impl Plugin for VoxelPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<VoxelLayer>()
-            .add_systems(Update, (fill_voxels_on_chunk_load, drop_voxels_on_chunk_unload));
+            .add_systems(
+                Update,
+                (
+                    fill_voxels_on_chunk_load,
+                    drop_voxels_on_chunk_unload,
+                    bridge_voxel_dirty_to_terrain,
+                ),
+            );
     }
 }
 
@@ -685,6 +715,26 @@ mod tests {
         // (1, solid), (0, 9), (0, 11), (0, *, 9), (0, *, 11) air.
         // Only (1, 10, 10) is solid -> 1 face.
         assert_eq!(faces.len(), 1);
+    }
+
+    #[test]
+    fn drain_voxel_dirty_into_terrain_dirty_moves_all_coords() {
+        let mut layer = VoxelLayer::default();
+        layer.dirty.insert((1, 2));
+        layer.dirty.insert((3, 4));
+        let mut terrain = Terrain::default();
+        drain_voxel_dirty_into_terrain_dirty(&mut layer, &mut terrain);
+        assert!(layer.dirty.is_empty());
+        assert!(terrain.dirty.contains(&(1, 2)));
+        assert!(terrain.dirty.contains(&(3, 4)));
+    }
+
+    #[test]
+    fn drain_voxel_dirty_is_noop_when_empty() {
+        let mut layer = VoxelLayer::default();
+        let mut terrain = Terrain::default();
+        drain_voxel_dirty_into_terrain_dirty(&mut layer, &mut terrain);
+        assert!(terrain.dirty.is_empty());
     }
 
     use super::super::terrain::ChunkGeometry;
