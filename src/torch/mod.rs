@@ -161,10 +161,9 @@ fn apply_torch_visibility(
     }
 }
 /// Scale the torch's `PointLight::intensity` linearly with
-/// `DarknessFactor`. Skips the write when the factor is zero -- the
-/// light is invisible anyway because `apply_torch_visibility` hid the
-/// whole hierarchy, but keeping intensity at zero matches what the user
-/// would see if visibility were toggled off independently.
+/// `DarknessFactor`. Writes every frame -- at most one entity, so the
+/// cost is negligible. `clamp` guards against a future cave-occupancy
+/// term (DEC-024) pushing the factor above 1.0.
 fn apply_torch_intensity(
     darkness: Res<DarknessFactor>,
     mut lights: Query<&mut PointLight, With<TorchLight>>,
