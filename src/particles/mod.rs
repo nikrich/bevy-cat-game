@@ -255,7 +255,7 @@ fn update_particles(
 /// `MAX_PARTICLES` cap is already saturated, so embers and biome
 /// particles share the same budget without needing a query inside
 /// `spawn_ember` itself.
-pub fn spawn_ember(
+pub(crate) fn spawn_ember(
     commands: &mut Commands,
     meshes: &mut Assets<Mesh>,
     materials: &mut Assets<StandardMaterial>,

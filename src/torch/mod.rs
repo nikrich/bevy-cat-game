@@ -198,8 +198,12 @@ fn spawn_torch_embers(
 
     while *accumulator >= 1.0 {
         *accumulator -= 1.0;
-        let particle_count = particles.iter().count();
         for source_transform in &sources {
+            // Re-sample the live count inside the source loop so a
+            // multi-source future doesn't silently over-spawn past the
+            // cap on a single accumulator tick. Today there's only one
+            // source so this is a no-op.
+            let particle_count = particles.iter().count();
             crate::particles::spawn_ember(
                 &mut commands,
                 meshes.as_mut(),
