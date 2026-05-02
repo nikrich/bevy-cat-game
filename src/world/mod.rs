@@ -59,6 +59,7 @@ impl Plugin for WorldPlugin {
             );
         edit::register(app);
         edit_egui::register(app);
+        app.add_plugins(voxel::VoxelPlugin);
     }
 }
 
