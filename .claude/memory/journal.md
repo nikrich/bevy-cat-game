@@ -1,6 +1,43 @@
 # Session Journal
 
-## 2026-04-30 -- Phase 2 build pivot: snap algorithm scrapped, Minecraft cube placement shipped
+## 2026-05-01 / 2026-05-02 -- Animated kitten un-parked: DEBT-023 resolved, six Mixamo clips wired with velocity-driven gait
+
+**What shipped:** The animated kitten that was parked at the start of Phase 5 is back as the player visual. `assets/models/kittens_animated/kitten_12.glb` ships six Mixamo clips (Happy Idle, Happy Walk, Jumping, Picking Up, Run, Swiming) on a single mesh / single skin. `src/player/mod.rs` wires:
+- **Idle / Walk / Run** by measured horizontal velocity (`Velocity::linvel.xz().length()`) with gates at 0.4 m/s and 6.0 m/s. Sprint button is no longer read by the animation system.
+- **Jump** when `TnuaController::is_airborne()` is true.
+- **Swim** when player Y < `world_water_surface_y() + SWIM_DEPTH_THRESHOLD` (0.5).
+- **Pickup** as one-shot, latched on `GatherEvent` from `src/gathering/mod.rs` for `PICKUP_DURATION` (0.4 s, matching the 1.2 s Mixamo clip ÷ 3× playback). `transitions.play(...)` without `.repeat()` for the one-shot.
+- **Sneak** loaded but unused — reserved for a future stealth input.
+
+Per-gait playback rate multipliers (`WALK_ANIM_SPEED` 2.0, `RUN_ANIM_SPEED` 2.3, `PICKUP_ANIM_SPEED` 3.0) keep Mixamo's foot-pace in sync with the game's 5 m/s walk and 8 m/s run; computed via `AnimationPlayer::animation_mut(node).set_speed(...)` each frame so the speed sticks across transitions.
+
+**DEBT-023 root cause:** The build script's `clean_skin_weights()` was running `vertex_group_limit_total(limit=4)` before glTF export, picking a different "best 4" bones per vertex than Blender's exporter would have. Skin matrices' determinants flipped during pose evaluation — bind pose rendered fine, animation playback corrupted normals (face hidden, tail through chest). Confirmed by the manual workflow producing a clean GLB while the script kept producing broken ones. `tools/build_animated_kitten.py` now keeps `clean_skin_weights` and `fix_normals` defined as do-not-call documentation; the main path skips both. DEBT-023 is closed.
+
+**The Mixamo iterative workflow** that worked, end to end (now in `palace_mixamo_iterative_workflow.md`):
+1. Mixamo download with **"Without Skin"** (avoid duplicate body meshes accumulating)
+2. FBX import in Blender
+3. Rename action in Action Editor (avoid `Armature|mixamo.com|Layer0` collisions)
+4. Push action onto kitten armature's NLA stack
+5. Delete the imported armature (action data-block survives)
+6. Re-export GLB
+
+For cleanup: `bpy.data.actions.remove(a, do_unlink=True)` brute-forces unwanted actions out (fake-user is set on every Mixamo import so plain purge skips them). Mesh cleanup script that finds the actual kitten mesh by tracing the Armature modifier and deletes everything else.
+
+**Lessons worth carrying forward:**
+- **Don't pre-empt the glTF exporter on skin weights.** Whatever vertex-group ops you do in Blender will fight the exporter's own 4-bone pruning and can corrupt skinning. Trust the exporter; do the minimum in Blender (NLA push, naming).
+- **Drive locomotion animation from measured velocity, not input intent.** Holding Sprint into a wall used to loop Run while the cat stood still. The fix is to read `bevy_rapier3d::Velocity` and gate by speed thresholds. State-driven clips (jump, swim, pickup) keep using their natural signals (airborne flag, position, event). DEC-023.
+- **`bevy_rapier3d::Velocity` is not auto-inserted on `RigidBody::Dynamic`.** Add `Velocity::default()` to the spawn bundle yourself if any system needs to read velocity. Symptom is a query that silently returns nothing while the body still moves.
+- **Validate GLBs externally before debugging engine code.** The Bevy discussion the user found (#5564) was about driving multiple AnimationPlayers — unrelated to our skinning bug. The actual signal that vindicated the new GLB was Khronos's online glTF viewer playing the animation cleanly. Standing rule from earlier sessions confirmed again: external viewer first, engine debugging second.
+- **Blender's exporter sorts clip names alphabetically.** `#AnimationN` indices shift each time a new clip is added. Map by name when convenient; if mapping by index, expect to update the loader on every export.
+- **Don't paste scripts into Blender's `rig_ui.py` text block.** That's Rigify's auto-generated UI; pasting concatenates and triggers `IndentationError`. Always use a fresh text block (Text editor header → New) or the Python Console.
+
+**Open threads (next session):**
+- Sneak input not wired. The clip is loaded but `drive_kitten_animation` has no path to it. Trivial when a stealth control lands (probably the existing `Z` verb or a dedicated key).
+- Pickup duration is a fixed `0.4 s` constant, not pulled from `Assets<AnimationClip>::get(...).map(|c| c.duration())`. If the `1.2 s ÷ 3× speed` math drifts when tuning, switch to the actual clip duration — costs one resource lookup on `GatherEvent`.
+- `world_water_surface_y()` in `src/player/mod.rs` mirrors the formula from `src/world/water.rs::water_y()` (which is private). If the water module's formula ever changes, mirror it. Cleaner alternative: make `water_y` `pub` and import it.
+- Build script `tools/build_animated_kitten.py` hasn't been re-validated since `clean_skin_weights` was disabled. The proven path right now is the manual Blender workflow; the script may produce a working GLB now but needs a test run to confirm.
+
+
 
 **What shipped:** Phase 2 W2.1/W2.2/W2.3/W2.4 went in as the snap-point algorithm per spec, then got fully replaced over the same session with **Minecraft-style cube placement** (DEC-020). Walls are now true 1×1×1 cubes (`Cuboid::new(1.0, 1.0, 1.0)`, lift 0.5, height 1.0). Cursor uses a rapier raycast against colliders (`CursorState.cursor_hit`), and `compute_placement` decides target cell from hit point + normal — top face stacks, side face places adjacent, terrain hit places on terrain. Line tool keeps the chain UX: anchor.y carries the wall's center Y, `segment_end` advances to the last placed cube so perpendicular cursor moves trace L-bends sharing the corner cube. New `Form::placement_style()` returns `Single | Line` and replaces the hardcoded `matches!(form, Form::Wall)` routing checks.
 

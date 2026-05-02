@@ -187,6 +187,16 @@
 - **Effort**: M
 - **Status**: Open
 
+## DEBT-023: Animated kitten parked — Mixamo bone matrices break Bevy skinning during playback
+- **Added**: 2026-05-01
+- **Severity**: Medium
+- **Area**: player, assets, animation
+- **What**: `tools/build_animated_kitten.py` produced an animated GLB whose bind pose rendered fine but corrupted during animation playback (face hidden, tail through chest). Symptoms looked like negative-determinant skinning matrices flipping vertex normals
+- **Why**: Root cause was `clean_skin_weights()` in the build script — its `vertex_group_limit_total(limit=4)` step pre-empted Blender's glTF exporter, picking a different "best 4" bones per vertex than the exporter would have. The mismatched selection produced skin matrices that broke under pose evaluation. Letting the exporter handle 4-bone limiting natively yields working output
+- **Fix when**: RESOLVED 2026-05-01. Manual Blender workflow (single mesh, push action to NLA, export with native exporter settings, no pre-pruning of skin weights) ships a working `assets/models/kittens_animated/kitten_12.glb`. Player SceneRoot points at the animated GLB; `load_kitten_animations` currently maps all 5 gait slots to `#Animation0` (Happy Idle) until Walk/Run/Jump/Sneak are re-imported and re-exported. `clean_skin_weights` and `fix_normals` stay defined in the script as documentation of what NOT to do
+- **Effort**: S (remaining work is just re-exporting with 4 more clips when polishing player feel)
+- **Status**: Resolved (2026-05-01)
+
 ## DEBT-022: Revisit utility AI crate adoption when ecosystem catches up to Bevy 0.18
 - **Added**: 2026-04-30
 - **Severity**: Low
