@@ -5,6 +5,7 @@ pub mod edit;
 pub mod edit_egui;
 pub mod props;
 pub mod terrain;
+pub mod voxel;
 pub mod water;
 
 use bevy::light::CascadeShadowConfigBuilder;
