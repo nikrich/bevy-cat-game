@@ -9,6 +9,8 @@
 
 use bevy::prelude::*;
 
+use crate::player::Player;
+
 // Task 6 wires this into apply_torch_intensity/apply_torch_visibility.
 #[allow(unused_imports)]
 use crate::world::daynight::DarknessFactor;
@@ -68,7 +70,72 @@ const EMBER_RATE_PER_SEC: f32 = 8.0;
 
 // Stub systems — implementations land in tasks 5-7.
 
-fn attach_torch_to_hand() {}
+/// Find the kitten's `mixamorig:RightHand` bone the moment its `Name`
+/// component is inserted (Bevy's glTF loader does this when the scene
+/// resolves), then spawn the torch as a child. Early-out once a `Torch`
+/// exists so this is effectively a one-shot lookup.
+///
+/// The Mixamo name coupling is the same one the animation system already
+/// pays -- see `player::attach_kitten_animations`. If the rig ever swaps
+/// off Mixamo, both this and the animations break together.
+fn attach_torch_to_hand(
+    mut commands: Commands,
+    asset_server: Res<AssetServer>,
+    new_names: Query<(Entity, &Name), Added<Name>>,
+    existing_torch: Query<(), With<Torch>>,
+    players: Query<(), With<Player>>,
+) {
+    if !existing_torch.is_empty() || players.is_empty() {
+        return;
+    }
+
+    for (entity, name) in &new_names {
+        if name.as_str() != "mixamorig:RightHand" {
+            continue;
+        }
+
+        commands
+            .entity(entity)
+            .insert(TorchHolder)
+            .with_children(|hand| {
+                hand.spawn((
+                    Torch,
+                    Name::new("Torch"),
+                    SceneRoot(asset_server.load("models/torch/torch.glb#Scene0")),
+                    TORCH_GRIP,
+                    Visibility::default(),
+                ))
+                .with_children(|torch| {
+                    torch.spawn((
+                        TorchLight,
+                        Name::new("TorchLight"),
+                        PointLight {
+                            color: Color::srgb(1.0, 0.55, 0.20),
+                            intensity: 0.0, // driven by apply_torch_intensity
+                            range: 6.0,
+                            shadows_enabled: false,
+                            ..default()
+                        },
+                        // Local position relative to the Torch entity --
+                        // approximate flame-tip offset above the torch
+                        // origin. // TUNE
+                        Transform::from_xyz(0.0, 0.15, 0.0),
+                    ));
+                    torch.spawn((
+                        TorchEmberSource,
+                        Name::new("TorchEmberSource"),
+                        // Slightly above the light so embers spawn at the
+                        // visible flame tip, not the wick. // TUNE
+                        Transform::from_xyz(0.0, 0.30, 0.0),
+                        GlobalTransform::default(),
+                    ));
+                });
+            });
+
+        // We attached -- stop scanning this frame.
+        break;
+    }
+}
 fn apply_torch_visibility() {}
 fn apply_torch_intensity() {}
 fn spawn_torch_embers() {}
