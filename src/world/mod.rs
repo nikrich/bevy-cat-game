@@ -42,6 +42,7 @@ impl Plugin for WorldPlugin {
                         chunks::track_player_chunk,
                         chunks::load_nearby_chunks,
                         chunks::unload_distant_chunks,
+                        terrain::apply_pending_colliders,
                         terrain::regenerate_dirty_chunks,
                         water::spawn_chunk_water,
                         props::spawn_chunk_props,

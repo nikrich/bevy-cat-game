@@ -182,6 +182,21 @@ pub fn is_position_occupied(
     })
 }
 
+/// Whether `pos` would deeply overlap the player's physics capsule. Placing
+/// a `RigidBody::Fixed` collider inside the player's dynamic capsule causes
+/// Rapier's EPA solver to crash (exit code 0xcfffffff). This check gates
+/// placement so the collision never happens.
+///
+/// The player capsule has radius 0.3 and floats at `float_height = 1.0`.
+/// We conservatively block placement within 0.45 m XZ and 1.2 m Y of the
+/// player centre (covers all structural forms).
+pub fn overlaps_player(pos: Vec3, player_pos: Vec3) -> bool {
+    let dx = (pos.x - player_pos.x).abs();
+    let dz = (pos.z - player_pos.z).abs();
+    let dy = (pos.y - player_pos.y).abs();
+    dx < 0.8 && dz < 0.8 && dy < 1.2
+}
+
 /// Wall-mounted interior categories — the door + window pieces from the
 /// LowPoly Interior pack. Their width is force-stretched to a target cube
 /// width (`cube_target_width`) so they fit cleanly into a wall row.

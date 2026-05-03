@@ -735,6 +735,14 @@ pub fn build_chunk_collider(geom: &ChunkGeometry) -> Option<Collider> {
     Collider::trimesh_with_flags(verts, tris, TriMeshFlags::FIX_INTERNAL_EDGES).ok()
 }
 
+/// Holds a newly-built collider for one frame so Rapier can process the
+/// removal of the old collider before the new shape is inserted. Without
+/// this staging, swapping a trimesh collider under the player's dynamic
+/// capsule causes Rapier's EPA solver to crash (exit code 0xcfffffff) on
+/// the deep-penetration resolution.
+#[derive(Component)]
+pub struct PendingCollider(pub Collider);
+
 // ---------- Regen system ----------
 
 /// Up to [`REGEN_BUDGET_PER_FRAME`] dirty chunks per frame, in two
@@ -785,19 +793,22 @@ pub fn regenerate_dirty_chunks(
             continue;
         };
 
-        // `try_insert` swallows the despawn race: a chunk can be unloaded
-        // (commands.entity().despawn() queued) the same frame regen tries
-        // to insert components on it. The chunk-lifecycle systems are
-        // chained to minimise that, but the race still opens whenever
-        // unload runs in a later frame between when regen drained `dirty`
-        // and when its commands apply.
+        // Stage the collider swap across two frames to prevent a Rapier
+        // EPA crash. Frame N: remove the old Collider + RigidBody so
+        // Rapier clears contacts, and attach PendingCollider with the new
+        // shape. Frame N+1: `apply_pending_colliders` inserts it.
+        //
+        // `try_insert` / `try_remove` swallow the despawn race: a chunk
+        // can be unloaded the same frame regen processes it.
         commands.entity(chunk_entity).try_insert((
             Mesh3d(mesh),
             MeshMaterial3d(terrain_material.0.clone()),
             TerrainChunk,
-            collider,
-            RigidBody::Fixed,
+            PendingCollider(collider),
         ));
+        commands
+            .entity(chunk_entity)
+            .try_remove::<(Collider, RigidBody)>();
     }
 
     // Color-only pass: vertex tints changed but geometry didn't. Swap
@@ -824,5 +835,21 @@ pub fn regenerate_dirty_chunks(
             MeshMaterial3d(terrain_material.0.clone()),
             TerrainChunk,
         ));
+    }
+}
+
+/// Second half of the two-frame collider swap. Entities tagged with
+/// [`PendingCollider`] had their old `Collider` removed last frame;
+/// Rapier has had one full step to clear the contact manifolds. Now
+/// insert the fresh collider so physics resumes on the updated terrain.
+pub fn apply_pending_colliders(
+    mut commands: Commands,
+    query: Query<(Entity, &PendingCollider)>,
+) {
+    for (entity, pending) in &query {
+        commands
+            .entity(entity)
+            .try_insert((pending.0.clone(), RigidBody::Fixed));
+        commands.entity(entity).try_remove::<PendingCollider>();
     }
 }

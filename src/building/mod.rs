@@ -856,6 +856,7 @@ fn place_building(
     terrain: Res<Terrain>,
     mut history: ResMut<EditHistory>,
     catalog: Res<InteriorCatalog>,
+    player_q: Query<&GlobalTransform, With<Player>>,
 ) {
     let Some(mut mode) = build_mode else { return };
     if inputs.cursor.pointer_over_ui || inputs.crafting.open {
@@ -877,6 +878,11 @@ fn place_building(
         }
         return;
     };
+
+    // Player position for overlap gating — spawning a fixed collider that
+    // deeply overlaps the player's dynamic capsule crashes Rapier's EPA
+    // solver. `None` if the player query is empty (shouldn't happen).
+    let player_pos = player_q.single().ok().map(|gt| gt.translation());
 
     // Route on the active tool. Place / Remove for now; future Move, Pick,
     // and door-into-wall Replace plug in here without disturbing the rest
@@ -932,6 +938,7 @@ fn place_building(
                         &terrain,
                         &noise,
                         &catalog,
+                        player_pos,
                     );
                 }
                 if released {
@@ -979,6 +986,7 @@ fn place_building(
                     &noise,
                     &mut history,
                     &catalog,
+                    player_pos,
                 );
             } else {
                 place_single(
@@ -999,6 +1007,7 @@ fn place_building(
                     &noise,
                     &mut history,
                     &catalog,
+                    player_pos,
                 );
             }
         }
@@ -1098,6 +1107,7 @@ fn paint_stamp(
     terrain: &Terrain,
     noise: &WorldNoise,
     catalog: &InteriorCatalog,
+    player_pos: Option<Vec3>,
 ) {
     if !INFINITE_RESOURCES && inventory.count(item) == 0 {
         return;
@@ -1106,6 +1116,11 @@ fn paint_stamp(
         compute_placement(cursor_world, cursor_hit, form, registry, placed_q, terrain, noise);
     if is_position_occupied(pos, placed_q) {
         return;
+    }
+    if let Some(pp) = player_pos {
+        if placement::overlaps_player(pos, pp) {
+            return;
+        }
     }
     let transform =
         Transform::from_translation(pos).with_rotation(Quat::from_rotation_y(mode.rotation));
@@ -1195,6 +1210,7 @@ fn place_wall_line(
     noise: &WorldNoise,
     history: &mut EditHistory,
     catalog: &InteriorCatalog,
+    player_pos: Option<Vec3>,
 ) {
     match mode.line_anchor {
         None => {
@@ -1219,6 +1235,11 @@ fn place_wall_line(
                 }
                 if is_position_occupied(tx.translation, placed_q) {
                     continue;
+                }
+                if let Some(pp) = player_pos {
+                    if placement::overlaps_player(tx.translation, pp) {
+                        continue;
+                    }
                 }
                 let new_entity = spawn_placed_building(
                     commands,
@@ -1295,6 +1316,7 @@ fn place_single(
     noise: &WorldNoise,
     history: &mut EditHistory,
     catalog: &InteriorCatalog,
+    player_pos: Option<Vec3>,
 ) {
     if !INFINITE_RESOURCES && inventory.count(item) == 0 {
         return;
@@ -1303,6 +1325,11 @@ fn place_single(
     let pos = compute_placement(
         cursor_world, cursor_hit, form, registry, placed_q, terrain, noise,
     );
+    if let Some(pp) = player_pos {
+        if placement::overlaps_player(pos, pp) {
+            return;
+        }
+    }
     let transform =
         Transform::from_translation(pos).with_rotation(Quat::from_rotation_y(mode.rotation));
 
