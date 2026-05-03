@@ -23,6 +23,7 @@ use leafwing_input_manager::prelude::ActionState;
 use crate::building::BuildMode;
 use crate::crafting::CraftingState;
 use crate::input::{Action, CursorState};
+use crate::player::Player;
 
 use super::biome::{Biome, WorldNoise};
 use super::terrain::{step_height, Terrain};
@@ -154,6 +155,7 @@ pub fn register(app: &mut App) {
             cycle_paint_biome,
             adjust_radius,
             apply_brush,
+            keep_player_above_terrain.after(apply_brush),
             apply_footprint_flatten,
             draw_brush_preview,
         ),
@@ -468,4 +470,32 @@ fn draw_brush_preview(
     gizmos
         .circle(iso, edit_mode.radius, edit_mode.brush.tint())
         .resolution(48);
+}
+
+/// After terrain brush edits, ensure the player isn't buried inside the
+/// new terrain surface. The player's capsule bottom sits at
+/// `player_y - 0.7` (half-height 0.4 + radius 0.3). With
+/// `float_height = 1.0`, the expected centre is `terrain_y + 1.0`.
+/// If the terrain was raised so the surface is above the capsule bottom,
+/// teleport the player up to prevent Rapier's EPA from crashing on the
+/// deep penetration when the rebuilt trimesh collider arrives.
+fn keep_player_above_terrain(
+    edit_mode: Res<EditMode>,
+    terrain: Res<Terrain>,
+    noise: Res<WorldNoise>,
+    mut player_q: Query<&mut Transform, With<Player>>,
+) {
+    if !edit_mode.active {
+        return;
+    }
+    let Ok(mut tf) = player_q.single_mut() else {
+        return;
+    };
+    let terrain_y = terrain.height_at_or_sample(tf.translation.x, tf.translation.z, &noise);
+    // Player centre must be at least float_height above terrain so the
+    // capsule bottom (centre - 0.7) clears the surface.
+    let min_y = terrain_y + 1.0;
+    if tf.translation.y < min_y {
+        tf.translation.y = min_y;
+    }
 }
